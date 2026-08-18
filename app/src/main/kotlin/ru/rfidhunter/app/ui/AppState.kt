@@ -33,6 +33,7 @@ sealed interface AppState {
         val pendingEpc: String? = null,
         val renameItem: Item? = null,
         val attempt: Int = 0,
+        val isReady: Boolean = false,
     ) : AppState
     /** A recognized phrase must be confirmed before the next action starts. */
     data class VoiceConfirmation(

@@ -63,7 +63,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // If a Russian Vosk model was bundled into assets, copy it once to the
         // app-private directory. With no model present the mock/service text
         // path remains available and no network access is attempted.
-        viewModelScope.launch { VoiceModelInstaller.installFromAssets(application) }
+        viewModelScope.launch {
+            // Copying and loading the model while the app is idle removes the
+            // cold-start gap from the first spoken phrase.
+            val installed = VoiceModelInstaller.installFromAssets(application)
+            if (installed) voice.prepare()
+        }
         viewModelScope.launch {
             gateway.tagReads.collectLatest { if (captureReads) synchronized(readBuffer) { readBuffer += it } }
         }
@@ -379,15 +384,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun listenVoice(): Job {
         voiceJob?.cancel()
+        val listening = _state.value as? AppState.VoiceListening
+        if (listening == null) return viewModelScope.launch { }
+        if (listening.isReady) _state.value = listening.copy(isReady = false)
         val job = viewModelScope.launch {
-            if (_state.value !is AppState.VoiceListening) return@launch
+            val startedFor = _state.value as? AppState.VoiceListening ?: return@launch
             val installed = VoiceModelInstaller.installFromAssets(getApplication())
             if (!installed || !voice.isAvailable) {
                 emitEvent("Русская модель Vosk не установлена")
                 return@launch
             }
-            emitEvent("Слушаю")
-            val result = voice.listen()
+            val result = voice.listen {
+                val latest = _state.value as? AppState.VoiceListening
+                if (latest != null && latest.mode == startedFor.mode && latest.pendingEpc == startedFor.pendingEpc && latest.renameItem?.id == startedFor.renameItem?.id && latest.attempt == startedFor.attempt) {
+                    _state.value = latest.copy(isReady = true)
+                }
+                emitEvent("Слушаю")
+            }
             if (result != null) {
                 if (_state.value is AppState.VoiceListening) submitVoice(result.text)
             } else {
@@ -395,7 +408,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 delay(700)
                 val latest = _state.value as? AppState.VoiceListening
                 if (latest != null && latest.attempt < 2) {
-                    _state.value = latest.copy(attempt = latest.attempt + 1)
+                    _state.value = latest.copy(attempt = latest.attempt + 1, isReady = false)
                 }
             }
         }
@@ -490,4 +503,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun emitEvent(value: String) { _events.tryEmit(value) }
+
+    override fun onCleared() {
+        voiceJob?.cancel()
+        voice.release()
+        super.onCleared()
+    }
 }

@@ -94,8 +94,15 @@ fun RfidHunterApp(
         }
     }
 
-    LaunchedEffect(state, microphonePermission) {
-        if (state is AppState.VoiceListening) {
+    val voiceState = state as? AppState.VoiceListening
+    LaunchedEffect(
+        voiceState?.mode,
+        voiceState?.pendingEpc,
+        voiceState?.renameItem?.id,
+        voiceState?.attempt,
+        microphonePermission,
+    ) {
+        if (voiceState != null) {
             if (microphonePermission) viewModel.listenVoice()
             else requestMicrophonePermission()
         }
@@ -199,7 +206,12 @@ private fun VoiceListeningScreen(state: AppState.VoiceListening) {
         Spacer(Modifier.height(36.dp))
         AnimatedMicrophone()
         Spacer(Modifier.height(24.dp))
-        Text("Слушаю", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20))
+        Text(
+            if (state.isReady) "Слушаю" else "Подготавливаю микрофон…",
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (state.isReady) Color(0xFF1B5E20) else Color(0xFF5D4037),
+        )
     }
 }
 

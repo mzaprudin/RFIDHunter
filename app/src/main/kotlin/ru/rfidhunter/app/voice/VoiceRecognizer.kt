@@ -18,13 +18,17 @@ data class VoiceResult(val text: String, val confidence: Float = 1f)
 
 interface VoiceRecognizer {
     val isAvailable: Boolean
-    suspend fun listen(): VoiceResult?
+    suspend fun prepare(): Boolean = isAvailable
+    suspend fun listen(onReady: () -> Unit = {}): VoiceResult?
 }
 
 class FakeVoiceRecognizer : VoiceRecognizer {
     override val isAvailable: Boolean = true
     var nextText: String = ""
-    override suspend fun listen(): VoiceResult? = nextText.takeIf { it.isNotBlank() }?.let { VoiceResult(it) }
+    override suspend fun listen(onReady: () -> Unit): VoiceResult? {
+        onReady()
+        return nextText.takeIf { it.isNotBlank() }?.let { VoiceResult(it) }
+    }
 }
 
 /**
@@ -33,19 +37,25 @@ class FakeVoiceRecognizer : VoiceRecognizer {
  */
 class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
     private val modelPath = File(context.filesDir, "vosk-model")
+    private val modelLock = Any()
+    @Volatile private var loadedModel: org.vosk.Model? = null
+
     override val isAvailable: Boolean
         get() = modelPath.exists() && File(modelPath, "am").exists()
 
-    override suspend fun listen(): VoiceResult? = withContext(Dispatchers.IO) {
+    override suspend fun prepare(): Boolean = withContext(Dispatchers.IO) {
+        modelOrNull() != null
+    }
+
+    override suspend fun listen(onReady: () -> Unit): VoiceResult? = withContext(Dispatchers.IO) {
         if (!isAvailable) return@withContext null
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             return@withContext null
         }
-        var model: org.vosk.Model? = null
         var recognizer: org.vosk.Recognizer? = null
         var record: AudioRecord? = null
         try {
-            model = org.vosk.Model(modelPath.absolutePath)
+            val model = modelOrNull() ?: return@withContext null
             recognizer = org.vosk.Recognizer(model, 16_000f)
             val minBuffer = AudioRecord.getMinBufferSize(
                 16_000,
@@ -64,6 +74,10 @@ class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
             val buffer = ByteArray(minBuffer)
             if (record.state != AudioRecord.STATE_INITIALIZED) return@withContext null
             record.startRecording()
+            // Do not announce "Слушаю" before AudioRecord is actually running.
+            // This callback is also the synchronization point for the UI: the
+            // user can start speaking as soon as the visual listening state appears.
+            onReady()
             val start = System.currentTimeMillis()
             var text: String? = null
             while (System.currentTimeMillis() - start < 5_000) {
@@ -89,7 +103,26 @@ class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
                 try { it.release() } catch (_: Throwable) { }
             }
             try { recognizer?.close() } catch (_: Throwable) { }
-            try { model?.close() } catch (_: Throwable) { }
+        }
+    }
+
+    private fun modelOrNull(): org.vosk.Model? {
+        loadedModel?.let { return it }
+        if (!isAvailable) return null
+        synchronized(modelLock) {
+            loadedModel?.let { return it }
+            return try {
+                org.vosk.Model(modelPath.absolutePath).also { loadedModel = it }
+            } catch (_: Throwable) {
+                null
+            }
+        }
+    }
+
+    fun release() {
+        synchronized(modelLock) {
+            loadedModel?.close()
+            loadedModel = null
         }
     }
 }
