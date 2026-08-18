@@ -51,6 +51,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val events = _events.asSharedFlow()
     private var inventoryJob: Job? = null
+    private var voiceJob: Job? = null
     private var captureReads = false
     private val readBuffer = mutableListOf<TagRead>()
     private val searchPowerPolicy = SearchPowerPolicy()
@@ -90,6 +91,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is AppState.RfidSearch -> Unit
             is AppState.WaitForNewTag -> startNewTagCheck(current.name, current.photoPath, current.replacingItem)
             is AppState.ItemCard -> emitEvent("Выберите действие на карточке")
+            is AppState.VoiceListening -> listenVoice()
             AppState.Service -> startInitialCheck()
             else -> emitEvent("Сейчас курок не используется")
         }
@@ -111,8 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val unique = synchronized(readBuffer) { readBuffer.distinctBy { it.epc.uppercase() } }
             when {
                 unique.isEmpty() -> {
-                    _state.value = AppState.AskSearchCommand
-                    emitEvent("Что найти?")
+                    startVoiceInput(VoiceInputMode.SEARCH)
                 }
                 unique.size > 1 -> {
                     _state.value = AppState.MultipleTags()
@@ -121,8 +122,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else -> {
                     val item = repository.getByEpc(unique.first().epc)
                     if (item == null) {
-                        _state.value = AppState.AddName(unique.first().epc)
-                        emitEvent("Новая метка. Как назвать вещь?")
+                        startVoiceInput(VoiceInputMode.ADD, pendingEpc = unique.first().epc)
                     } else {
                         _state.value = AppState.ItemCard(item)
                         emitEvent("Это ${item.name}. Открыта карточка вещи")
@@ -210,21 +210,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun submitVoice(text: String) {
         val value = normalizeText(text)
         when (val current = _state.value) {
+            is AppState.VoiceListening -> handleRecognizedVoice(current, text)
+            is AppState.VoiceConfirmation -> Unit
             is AppState.AddName -> if (value.isNotBlank()) {
-                val name = text.trim()
-                val renameItem = current.renameItem
-                if (renameItem != null) {
-                    viewModelScope.launch {
-                        val updated = renameItem.copy(name = name)
-                        repository.update(updated)
-                        _state.value = AppState.ItemCard(updated)
-                        emitEvent("Название изменено")
-                    }
-                } else {
-                    val photoContext = if (current.pendingEpc == null) PhotoContext.MANUAL_NEW else PhotoContext.NEW_WITH_TAG
-                    _state.value = AppState.Camera(photoContext, name = name, epc = current.pendingEpc)
-                    emitEvent("Сделайте фотографию кнопкой громкости")
-                }
+                _state.value = AppState.VoiceConfirmation(
+                    mode = VoiceInputMode.ADD,
+                    text = text.trim(),
+                    pendingEpc = current.pendingEpc,
+                    renameItem = current.renameItem,
+                )
             }
             AppState.AskSearchCommand -> handleSearchCommand(value)
             else -> emitEvent("Голосовая команда сейчас не ожидается")
@@ -232,31 +226,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleSearchCommand(value: String) {
-        when (val command = parseVoiceCommand(value)) {
-            is VoiceCommand.Add -> {
-                if (command.name.isNullOrBlank()) _state.value = AppState.AddName(null)
-                else _state.value = AppState.Camera(PhotoContext.MANUAL_NEW, name = command.name)
-            }
-            is VoiceCommand.Search -> {
-                val item = findBestItem(command.query, items.value)
-                if (item == null) {
-                    emitEvent("Не нашёл такую вещь. Повторите название")
-                    _state.value = AppState.AskSearchCommand
-                } else {
-                    _state.value = AppState.SearchTarget(item)
-                    emitEvent("Ищем ${item.name}. Удерживайте курок")
-                }
-            }
-            null -> {
-            emitEvent("Не нашёл такую вещь. Повторите название")
-            _state.value = AppState.AskSearchCommand
-            }
-        }
+        handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), value)
     }
 
     fun beginAddByVoice() {
-        _state.value = AppState.AddName(null)
-        emitEvent("Как назвать вещь?")
+        startVoiceInput(VoiceInputMode.ADD)
     }
 
     fun openCatalog() { _state.value = AppState.Catalog(0) }
@@ -279,8 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun rename(item: Item) {
-        _state.value = AppState.AddName(renameItem = item)
-        emitEvent("Как назвать вещь заново?")
+        startVoiceInput(VoiceInputMode.ADD, renameItem = item)
     }
 
     fun retakePhoto(item: Item) {
@@ -311,6 +284,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value as? AppState.Camera ?: return
         _state.value = AppState.PhotoReview(path, current.context, current.item, current.name, current.epc)
         emitEvent("Проверьте фотографию")
+    }
+
+    fun onPhotoCaptureFailed() {
+        emitEvent("Не удалось сохранить фотографию. Повторите")
     }
 
     fun requestPhotoCapture() { _photoCapture.tryEmit(Unit) }
@@ -365,6 +342,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else AppState.Idle
             is AppState.PhotoReview -> _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
             is AppState.WaitForNewTag -> _state.value = current.replacingItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
+            is AppState.VoiceListening -> {
+                voiceJob?.cancel()
+                _state.value = current.renameItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
+            }
+            is AppState.VoiceConfirmation -> {
+                _state.value = current.renameItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
+            }
             AppState.AskSearchCommand -> _state.value = AppState.Idle
             is AppState.SearchTarget -> _state.value = AppState.Idle
             is AppState.RfidSearch -> {
@@ -393,17 +377,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun readerAddress(): String = gateway.readerAddress
     fun setReaderAddress(address: String) { gateway.readerAddress = address.trim() }
 
-    fun listenVoice() = viewModelScope.launch {
-        val installed = VoiceModelInstaller.installFromAssets(getApplication())
-        if (!installed || !voice.isAvailable) {
-            emitEvent("Русская модель Vosk не установлена")
-            return@launch
+    fun listenVoice(): Job {
+        voiceJob?.cancel()
+        val job = viewModelScope.launch {
+            if (_state.value !is AppState.VoiceListening) return@launch
+            val installed = VoiceModelInstaller.installFromAssets(getApplication())
+            if (!installed || !voice.isAvailable) {
+                emitEvent("Русская модель Vosk не установлена")
+                return@launch
+            }
+            emitEvent("Слушаю")
+            val result = voice.listen()
+            if (result != null) {
+                if (_state.value is AppState.VoiceListening) submitVoice(result.text)
+            } else {
+                emitEvent("Не удалось распознать. Скажите ещё раз")
+                delay(700)
+                val latest = _state.value as? AppState.VoiceListening
+                if (latest != null && latest.attempt < 2) {
+                    _state.value = latest.copy(attempt = latest.attempt + 1)
+                }
+            }
         }
-        emitEvent("Говорите")
-        voice.listen()?.let { submitVoice(it.text) } ?: emitEvent("Не удалось распознать. Повторите")
+        voiceJob = job
+        job.invokeOnCompletion { if (voiceJob === job) voiceJob = null }
+        return job
     }
 
-    fun submitServiceVoice(text: String) { fakeVoice.nextText = text; submitVoice(text) }
+    fun submitServiceVoice(text: String) {
+        fakeVoice.nextText = text
+        if (_state.value is AppState.Service) {
+            handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), text)
+        } else {
+            submitVoice(text)
+        }
+    }
+
+    fun editVoiceConfirmation() {
+        val current = _state.value as? AppState.VoiceConfirmation ?: return
+        startVoiceInput(current.mode, current.pendingEpc, current.renameItem)
+    }
+
+    fun acceptVoiceConfirmation() {
+        val current = _state.value as? AppState.VoiceConfirmation ?: return
+        when (current.mode) {
+            VoiceInputMode.SEARCH -> {
+                val item = findBestItem(current.text, items.value)
+                if (item == null) {
+                    emitEvent("Не нашёл такую вещь. Скажите ещё раз")
+                    startVoiceInput(VoiceInputMode.SEARCH)
+                } else {
+                    _state.value = AppState.SearchTarget(item)
+                    emitEvent("Ищем ${item.name}. Удерживайте курок")
+                }
+            }
+            VoiceInputMode.ADD -> {
+                val name = current.text.trim()
+                if (name.isBlank()) {
+                    startVoiceInput(VoiceInputMode.ADD, current.pendingEpc, current.renameItem)
+                } else if (current.renameItem != null) {
+                    val item = current.renameItem
+                    viewModelScope.launch {
+                        val updated = item.copy(name = name)
+                        repository.update(updated)
+                        _state.value = AppState.ItemCard(updated)
+                        emitEvent("Название изменено")
+                    }
+                } else {
+                    val photoContext = if (current.pendingEpc == null) PhotoContext.MANUAL_NEW else PhotoContext.NEW_WITH_TAG
+                    _state.value = AppState.Camera(photoContext, name = name, epc = current.pendingEpc)
+                    emitEvent("Сделайте фотографию кнопкой громкости")
+                }
+            }
+        }
+    }
+
+    private fun startVoiceInput(
+        mode: VoiceInputMode,
+        pendingEpc: String? = null,
+        renameItem: Item? = null,
+    ) {
+        voiceJob?.cancel()
+        _state.value = AppState.VoiceListening(mode, pendingEpc, renameItem)
+        emitEvent(if (mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?")
+    }
+
+    private fun handleRecognizedVoice(input: AppState.VoiceListening, text: String) {
+        val raw = text.trim()
+        val value = normalizeText(raw)
+        if (value.isBlank()) {
+            startVoiceInput(input.mode, input.pendingEpc, input.renameItem)
+            return
+        }
+        when (input.mode) {
+            VoiceInputMode.SEARCH -> when (val command = parseVoiceCommand(raw)) {
+                is VoiceCommand.Search -> _state.value = AppState.VoiceConfirmation(VoiceInputMode.SEARCH, command.query)
+                is VoiceCommand.Add -> {
+                    if (command.name.isNullOrBlank()) startVoiceInput(VoiceInputMode.ADD)
+                    else _state.value = AppState.VoiceConfirmation(VoiceInputMode.ADD, command.name)
+                }
+                null -> startVoiceInput(VoiceInputMode.SEARCH)
+            }
+            VoiceInputMode.ADD -> {
+                val name = when (val command = parseVoiceCommand(raw)) {
+                    is VoiceCommand.Add -> command.name
+                    else -> raw
+                }
+                if (name.isNullOrBlank()) startVoiceInput(VoiceInputMode.ADD, input.pendingEpc, input.renameItem)
+                else _state.value = AppState.VoiceConfirmation(VoiceInputMode.ADD, name, input.pendingEpc, input.renameItem)
+            }
+        }
+    }
 
     private fun emitEvent(value: String) { _events.tryEmit(value) }
 }

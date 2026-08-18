@@ -8,6 +8,11 @@ enum class PhotoContext {
     EDIT_EXISTING,
 }
 
+enum class VoiceInputMode {
+    SEARCH,
+    ADD,
+}
+
 sealed interface AppState {
     data object Idle : AppState
     data object InitialChecking : AppState
@@ -21,6 +26,20 @@ sealed interface AppState {
         val name: String,
         val photoPath: String?,
         val replacingItem: Item? = null,
+    ) : AppState
+    /** The app is actively recording a short offline voice phrase. */
+    data class VoiceListening(
+        val mode: VoiceInputMode,
+        val pendingEpc: String? = null,
+        val renameItem: Item? = null,
+        val attempt: Int = 0,
+    ) : AppState
+    /** A recognized phrase must be confirmed before the next action starts. */
+    data class VoiceConfirmation(
+        val mode: VoiceInputMode,
+        val text: String,
+        val pendingEpc: String? = null,
+        val renameItem: Item? = null,
     ) : AppState
     data object AskSearchCommand : AppState
     data class SearchTarget(val item: Item) : AppState

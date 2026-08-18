@@ -32,6 +32,7 @@ class DomainBehaviorTest {
         assertEquals(catalogue[1], findBestItem("ключи квартир", catalogue))
         assertEquals(catalogue[2], findBestItem("пулт от телевизора", catalogue))
         assertNull(findBestItem("несуществующая вещь", catalogue))
+        assertNull(findBestItem("кувалда", catalogue))
     }
 
     @Test

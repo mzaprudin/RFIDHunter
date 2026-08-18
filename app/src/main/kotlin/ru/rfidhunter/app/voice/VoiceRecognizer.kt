@@ -53,7 +53,9 @@ class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
                 AudioFormat.ENCODING_PCM_16BIT,
             ).coerceAtLeast(4096)
             record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                // VOICE_RECOGNITION avoids Huawei's aggressive call/noise
+                // processing while remaining available on Android 9.
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 16_000,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -66,6 +68,7 @@ class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
             var text: String? = null
             while (System.currentTimeMillis() - start < 5_000) {
                 val read = record.read(buffer, 0, buffer.size)
+                if (read == AudioRecord.ERROR_DEAD_OBJECT || read == AudioRecord.ERROR_INVALID_OPERATION) break
                 if (read > 0 && recognizer.acceptWaveForm(buffer, read)) {
                     text = JSONObject(recognizer.result).optString("text").takeIf { it.isNotBlank() }
                     if (text != null) break
@@ -73,6 +76,9 @@ class VoskVoiceRecognizer(private val context: Context) : VoiceRecognizer {
             }
             if (text == null) {
                 text = JSONObject(recognizer.finalResult).optString("text").takeIf { it.isNotBlank() }
+            }
+            if (text == null) {
+                text = JSONObject(recognizer.partialResult).optString("partial").takeIf { it.isNotBlank() }
             }
             text?.let { VoiceResult(normalizeText(it), 0.85f) }
         } catch (_: Throwable) {
