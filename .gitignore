@@ -1,1 +1,12 @@
 Honeywell_RFID_SDK_v0.5.0
+.tools
+.gradle
+build
+**/build
+local.properties
+models/
+app/src/main/assets/vosk-model
+app/src/mock/assets/vosk-model
+app/src/hardware/assets/vosk-model
+
+.env

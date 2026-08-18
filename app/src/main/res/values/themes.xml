@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.RfidHunter" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#1B5E20</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:statusBarColor">#1B5E20</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
