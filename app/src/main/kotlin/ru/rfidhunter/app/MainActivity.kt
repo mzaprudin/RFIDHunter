@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -24,6 +25,8 @@ class MainActivity : ComponentActivity() {
     private var activeViewModel: MainViewModel? = null
     private var cameraGranted by mutableStateOf(false)
     private var microphoneGranted by mutableStateOf(false)
+    private var bluetoothPermissionRequested = false
+    private var readerServiceStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,7 +36,7 @@ class MainActivity : ComponentActivity() {
                 android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
         )
         setMaximumVolume()
-        ContextCompat.startForegroundService(this, Intent(this, RfidForegroundService::class.java))
+        startReaderServiceWhenPermitted()
         setContent {
             val vm: MainViewModel = ViewModelProvider(this@MainActivity)[MainViewModel::class.java]
             activeViewModel = vm
@@ -54,6 +57,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshPermissions()
+        startReaderServiceWhenPermitted()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -128,9 +132,31 @@ class MainActivity : ComponentActivity() {
         microphoneGranted = hasPermission(Manifest.permission.RECORD_AUDIO)
     }
 
+    /** Android 12+ requires runtime Bluetooth permission before a connected-device FGS can start. */
+    private fun startReaderServiceWhenPermitted() {
+        if (readerServiceStarted) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val bluetoothReady = hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
+                hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            if (!bluetoothReady) {
+                if (!bluetoothPermissionRequested) {
+                    bluetoothPermissionRequested = true
+                    requestPermissions(
+                        arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                        REQUEST_BLUETOOTH,
+                    )
+                }
+                return
+            }
+        }
+        ContextCompat.startForegroundService(this, Intent(this, RfidForegroundService::class.java))
+        readerServiceStarted = true
+    }
+
     companion object {
         const val EXTRA_TRIGGER_ON_START = "ru.rfidhunter.app.EXTRA_TRIGGER_ON_START"
         private const val REQUEST_CAMERA = 10
         private const val REQUEST_MIC = 11
+        private const val REQUEST_BLUETOOTH = 12
     }
 }

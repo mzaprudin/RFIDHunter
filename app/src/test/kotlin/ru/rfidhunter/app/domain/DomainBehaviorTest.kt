@@ -31,6 +31,8 @@ class DomainBehaviorTest {
         assertEquals(catalogue[0], findBestItem("очков", catalogue))
         assertEquals(catalogue[1], findBestItem("ключи квартир", catalogue))
         assertEquals(catalogue[2], findBestItem("пулт от телевизора", catalogue))
+        assertEquals(CatalogMatchKind.FUZZY, findBestItemMatch("а чки", catalogue)?.kind)
+        assertEquals(catalogue[0], findBestItemMatch("а чки", catalogue)?.item)
         assertNull(findBestItem("несуществующая вещь", catalogue))
         assertNull(findBestItem("кувалда", catalogue))
     }

@@ -4,25 +4,43 @@ import android.graphics.BitmapFactory
 import android.media.MediaActionSound
 import android.os.VibrationEffect
 import android.os.Vibrator
+import androidx.activity.compose.BackHandler
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,21 +50,23 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -54,15 +74,16 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.activity.compose.BackHandler
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
 import ru.rfidhunter.app.domain.ConnectionState
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.Item
 import ru.rfidhunter.app.voice.OfflinePromptPlayer
+import ru.rfidhunter.app.voice.VoiceBackend
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -79,65 +100,67 @@ fun RfidHunterApp(
     val state by viewModel.state.collectAsState()
     val items by viewModel.items.collectAsState()
     val connection by viewModel.connectionState.collectAsState()
+    val voiceBackend by viewModel.voiceBackend.collectAsState()
     var announcement by remember { mutableStateOf("") }
+    var announcementKey by remember { mutableStateOf("") }
+    val screenKey = feedbackKey(state)
+    val latestScreenKey by rememberUpdatedState(screenKey)
     val context = LocalContext.current
     val promptPlayer = remember(context) { OfflinePromptPlayer(context) }
-    DisposableEffect(promptPlayer) {
-        onDispose { promptPlayer.release() }
-    }
+    DisposableEffect(promptPlayer) { onDispose { promptPlayer.release() } }
     BackHandler(enabled = state !is AppState.Idle) { viewModel.goBack() }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect {
             announcement = it
+            announcementKey = latestScreenKey
             promptPlayer.play(it)
+        }
+    }
+    LaunchedEffect(screenKey) {
+        if (announcementKey != screenKey) {
+            announcement = ""
+            announcementKey = screenKey
         }
     }
 
     val voiceState = state as? AppState.VoiceListening
     LaunchedEffect(
+        voiceState?.sessionId,
         voiceState?.mode,
         voiceState?.pendingEpc,
         voiceState?.renameItem?.id,
         voiceState?.attempt,
+        voiceState?.instruction,
+        voiceState?.missingSearchQuery,
         microphonePermission,
     ) {
         if (voiceState != null) {
-            if (microphonePermission) viewModel.listenVoice()
-            else requestMicrophonePermission()
+            if (microphonePermission) viewModel.listenVoice() else requestMicrophonePermission()
         }
     }
 
-    MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
-            Column(modifier = Modifier.fillMaxSize()) {
+    val roomyTypography = remember { Typography().withRoomyLineHeight() }
+    MaterialTheme(typography = roomyTypography) {
+        Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
+            Column(Modifier.fillMaxSize()) {
                 if (announcement.isNotBlank()) {
-                    Text(
-                        text = announcement,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFFE8F5E9))
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                    )
+                    Text(announcement, modifier = Modifier.fillMaxWidth().background(Color(0xFFE8F5E9)).padding(16.dp), fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
                 }
-                Box(modifier = Modifier.weight(1f)) {
+                Box(Modifier.weight(1f)) {
                     when (val current = state) {
                         AppState.Idle -> IdleScreen(viewModel, connection, items)
                         AppState.InitialChecking -> StatusScreen("Проверяю метку…")
-                        is AppState.AddName -> VoiceListeningScreen(
-                            AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem),
-                        )
+                        is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem), voiceBackend, viewModel::openCatalog)
                         is AppState.Camera -> CameraScreen(current, viewModel, cameraPermission, requestCameraPermission)
                         is AppState.PhotoReview -> PhotoReviewScreen(current, viewModel::redoPhoto, viewModel::acceptPhoto)
                         is AppState.WaitForNewTag -> WaitForTagScreen(current, viewModel)
-                        is AppState.VoiceListening -> VoiceListeningScreen(current)
+                        is AppState.VoiceListening -> VoiceListeningScreen(current, voiceBackend, viewModel::openCatalog)
                         is AppState.VoiceConfirmation -> VoiceConfirmationScreen(current, viewModel)
-                        AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH))
+                        AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
                         is AppState.SearchTarget -> SearchTargetScreen(current, viewModel)
                         is AppState.RfidSearch -> SearchProgressScreen(current)
+                        is AppState.SearchPaused -> SearchPausedScreen(current, viewModel)
                         is AppState.Found -> FoundScreen(current, viewModel)
                         is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
                         is AppState.Catalog -> CatalogScreen(current, items, viewModel)
@@ -152,65 +175,122 @@ fun RfidHunterApp(
     }
 }
 
+private fun Typography.withRoomyLineHeight(): Typography = copy(
+    displayLarge = displayLarge.copy(lineHeight = 1.28.em),
+    displayMedium = displayMedium.copy(lineHeight = 1.28.em),
+    displaySmall = displaySmall.copy(lineHeight = 1.28.em),
+    headlineLarge = headlineLarge.copy(lineHeight = 1.28.em),
+    headlineMedium = headlineMedium.copy(lineHeight = 1.28.em),
+    headlineSmall = headlineSmall.copy(lineHeight = 1.28.em),
+    titleLarge = titleLarge.copy(lineHeight = 1.28.em),
+    titleMedium = titleMedium.copy(lineHeight = 1.28.em),
+    titleSmall = titleSmall.copy(lineHeight = 1.28.em),
+    bodyLarge = bodyLarge.copy(lineHeight = 1.28.em),
+    bodyMedium = bodyMedium.copy(lineHeight = 1.28.em),
+    bodySmall = bodySmall.copy(lineHeight = 1.28.em),
+    labelLarge = labelLarge.copy(lineHeight = 1.28.em),
+    labelMedium = labelMedium.copy(lineHeight = 1.28.em),
+    labelSmall = labelSmall.copy(lineHeight = 1.28.em),
+)
+
+private fun feedbackKey(state: AppState): String = when (state) {
+    AppState.Idle -> "idle"
+    AppState.Service -> "service"
+    AppState.InitialChecking -> "initial"
+    is AppState.Catalog -> "catalog"
+    is AppState.ItemCard -> "card-${state.item.id}"
+    is AppState.SearchTarget -> "target-${state.item.id}"
+    is AppState.RfidSearch -> "search-${state.item.id}"
+    is AppState.SearchPaused -> "paused-${state.item.id}"
+    is AppState.Found -> "found-${state.item.id}"
+    is AppState.VoiceListening -> "voice-${state.mode}-${state.renameItem?.id ?: 0}-${state.attempt}-${state.instruction ?: ""}"
+    is AppState.VoiceConfirmation -> "voice-confirm-${state.mode}"
+    is AppState.AddName -> "add-name"
+    is AppState.Camera -> "camera-${state.context}"
+    is AppState.PhotoReview -> "photo-review"
+    is AppState.WaitForNewTag -> "wait-tag"
+    is AppState.MultipleTags -> "multiple"
+    is AppState.Message -> "message"
+    is AppState.Error -> "error"
+    AppState.AskSearchCommand -> "ask-search"
+}
+
 @Composable
 private fun IdleScreen(viewModel: MainViewModel, connection: ConnectionState, items: List<Item>) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically),
-    ) {
+    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically)) {
         Text("Искатель вещей", fontSize = 34.sp, fontWeight = FontWeight.Bold)
-        Text(
-            text = when (connection) {
-                ConnectionState.CONNECTED -> "Считыватель подключён"
-                ConnectionState.CONNECTING -> "Подключаю считыватель…"
-                ConnectionState.ERROR -> "Ошибка считывателя"
-                ConnectionState.DISCONNECTED -> "Демо-режим без считывателя"
-            },
-            fontSize = 18.sp,
-        )
+        Text(when (connection) {
+            ConnectionState.CONNECTED -> "Считыватель подключён"
+            ConnectionState.CONNECTING -> "Подключаю считыватель…"
+            ConnectionState.ERROR -> "Ошибка считывателя"
+            ConnectionState.DISCONNECTED -> "Демо-режим без считывателя"
+        }, fontSize = 18.sp)
         Text("Нажмите курок, чтобы проверить метку", fontSize = 24.sp, textAlign = TextAlign.Center)
-        if (viewModel.fakeGateway != null) {
-            Button(onClick = viewModel::simulateTriggerPress, modifier = Modifier.fillMaxWidth().height(88.dp)) {
-                Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 19.sp)
-            }
-        }
-        Button(onClick = viewModel::openCatalog, modifier = Modifier.fillMaxWidth().height(88.dp)) {
-            Text("Открыть каталог (${items.size})", fontSize = 19.sp)
-        }
-        OutlinedButton(onClick = viewModel::beginAddByVoice, modifier = Modifier.fillMaxWidth().height(88.dp)) {
-            Text("Добавить голосом", fontSize = 19.sp)
-        }
-        if (viewModel.fakeGateway != null) {
-            TextButton(onClick = viewModel::openService) { Text("Разработчик: сервис") }
-        }
+        if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(96.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
+        Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(96.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
+        OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(96.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
+        if (viewModel.fakeGateway != null) TextButton(viewModel::openService) { Text("Разработчик: сервис") }
     }
 }
 
-@Composable
-private fun StatusScreen(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-    }
-}
+@Composable private fun StatusScreen(text: String) = Box(Modifier.fillMaxSize(), Alignment.Center) { Text(text, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
 
 @Composable
-private fun VoiceListeningScreen(state: AppState.VoiceListening) {
-    val prompt = if (state.mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?"
+private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceBackend, onOpenCatalog: () -> Unit) {
+    val prompt = state.instruction
+        ?: if (state.mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?"
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(prompt, fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(36.dp))
-        AnimatedMicrophone()
-        Spacer(Modifier.height(24.dp))
-        Text(
-            if (state.isReady) "Слушаю" else "Подготавливаю микрофон…",
-            fontSize = 30.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (state.isReady) Color(0xFF1B5E20) else Color(0xFF5D4037),
+        if (!state.isProcessing) {
+            if (state.missingSearchQuery != null) {
+                Text("В каталоге отсутствует", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "«${state.missingSearchQuery}»",
+                    modifier = Modifier.fillMaxWidth(),
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF1565C0),
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("Назовите другую вещь", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            } else {
+                Text(prompt, fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+        if (state.isProcessing) AnimatedProcessingIcon() else AnimatedMicrophone()
+        Spacer(Modifier.height(20.dp))
+        val status = when {
+            state.isProcessing -> "Распознаю речь…"
+            state.isReady -> "Слушаю"
+            else -> when (backend) {
+                VoiceBackend.WHISPER -> "Подготавливаю Whisper…"
+                VoiceBackend.VOSK -> "Подготавливаю Vosk…"
+            }
+        }
+        Text(status, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = if (state.isReady) Color(0xFF1B5E20) else Color(0xFF5D4037), textAlign = TextAlign.Center)
+        if (state.missingSearchQuery != null) {
+            Spacer(Modifier.height(24.dp))
+            Button(onOpenCatalog, Modifier.fillMaxWidth().height(78.dp)) {
+                Text("ОТКРЫТЬ КАТАЛОГ", fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimatedProcessingIcon() {
+    Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) { drawCircle(Color(0xFFE3F2FD)) }
+        CircularProgressIndicator(
+            modifier = Modifier.size(88.dp),
+            color = Color(0xFF1565C0),
+            strokeWidth = 10.dp,
         )
     }
 }
@@ -218,94 +298,52 @@ private fun VoiceListeningScreen(state: AppState.VoiceListening) {
 @Composable
 private fun AnimatedMicrophone() {
     val transition = rememberInfiniteTransition(label = "microphone")
-    val pulse by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
-        label = "microphone-pulse",
-    )
-    Canvas(
-        Modifier
-            .size(132.dp)
-            .graphicsLayer { scaleX = pulse; scaleY = pulse },
-    ) {
+    val pulse by transition.animateFloat(.92f, 1.08f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "microphone-pulse")
+    Canvas(Modifier.size(132.dp).graphicsLayer { scaleX = pulse; scaleY = pulse }) {
         val center = size.minDimension / 2f
-        drawCircle(Color(0xFFE8F5E9), radius = center)
-        drawRoundRect(
-            color = Color(0xFF2E7D32),
-            topLeft = androidx.compose.ui.geometry.Offset(center - 18f, center - 34f),
-            size = androidx.compose.ui.geometry.Size(36f, 62f),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f, 18f),
-        )
-        drawArc(
-            color = Color(0xFF2E7D32),
-            startAngle = 0f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = androidx.compose.ui.geometry.Offset(center - 34f, center - 9f),
-            size = androidx.compose.ui.geometry.Size(68f, 54f),
-            style = Stroke(width = 7f),
-        )
-        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center, center + 45f), androidx.compose.ui.geometry.Offset(center, center + 59f), strokeWidth = 7f)
-        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center - 20f, center + 59f), androidx.compose.ui.geometry.Offset(center + 20f, center + 59f), strokeWidth = 7f)
+        drawCircle(Color(0xFFE8F5E9), center)
+        drawRoundRect(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center - 18f, center - 34f), androidx.compose.ui.geometry.Size(36f, 62f), androidx.compose.ui.geometry.CornerRadius(18f, 18f))
+        drawArc(Color(0xFF2E7D32), 0f, 180f, false, topLeft = androidx.compose.ui.geometry.Offset(center - 34f, center - 9f), size = androidx.compose.ui.geometry.Size(68f, 54f), style = Stroke(7f))
+        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center, center + 45f), androidx.compose.ui.geometry.Offset(center, center + 59f), 7f)
+        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center - 20f, center + 59f), androidx.compose.ui.geometry.Offset(center + 20f, center + 59f), 7f)
     }
 }
 
 @Composable
 private fun VoiceConfirmationScreen(state: AppState.VoiceConfirmation, viewModel: MainViewModel) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .resilientReviewInput(viewModel::editVoiceConfirmation, viewModel::acceptVoiceConfirmation),
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            ReviewZone("ИЗМЕНИТЬ", Color(0xFFFFE0B2), Modifier.weight(0.22f))
-            Box(
-                Modifier.fillMaxWidth().weight(0.56f).background(Color.White),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    state.text,
-                    modifier = Modifier.fillMaxWidth().padding(24.dp),
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                )
+    Column(Modifier.fillMaxSize().resilientReviewInput(viewModel::editVoiceConfirmation, viewModel::acceptVoiceConfirmation)) {
+        ReviewZone("ИЗМЕНИТЬ", Color(0xFFFFE0B2), Modifier.weight(.22f))
+        Box(Modifier.fillMaxWidth().weight(.56f).background(Color.White), Alignment.Center) {
+            if (state.suggestedItem != null) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Я услышал:", fontSize = 25.sp, textAlign = TextAlign.Center)
+                    Text("«${state.text}»", fontSize = 30.sp, color = Color(0xFF616161), textAlign = TextAlign.Center)
+                    Text("Вероятно, вы имели в виду:", fontSize = 25.sp, textAlign = TextAlign.Center)
+                    Text("«${state.suggestedItem.name}»", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+                }
+            } else {
+                Text(state.text, modifier = Modifier.fillMaxWidth().padding(24.dp), fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
             }
-            ReviewZone("ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(0.22f))
         }
+        ReviewZone(if (state.suggestedItem != null) "ДА — ИСКАТЬ" else "ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(.22f))
     }
 }
 
 @Composable
-private fun CameraScreen(
-    state: AppState.Camera,
-    viewModel: MainViewModel,
-    permission: Boolean,
-    requestPermission: () -> Unit,
-) {
+private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permission: Boolean, requestPermission: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var processingPhoto by remember { mutableStateOf(false) }
     val shutterSound = remember(context) { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
     val vibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
-    DisposableEffect(shutterSound) {
-        onDispose { shutterSound.release() }
-    }
+    DisposableEffect(shutterSound) { onDispose { shutterSound.release() } }
     LaunchedEffect(viewModel, shutterSound, vibrator) {
         viewModel.photoFeedback.collect {
             shutterSound.play(MediaActionSound.SHUTTER_CLICK)
-            vibrator?.let { device ->
-                device.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
-            }
+            vibrator?.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
         }
     }
-    val controller = remember(context) {
-        LifecycleCameraController(context).apply {
-            cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-            setEnabledUseCases(CameraController.IMAGE_CAPTURE)
-        }
-    }
+    val controller = remember(context) { LifecycleCameraController(context).apply { cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA; setEnabledUseCases(CameraController.IMAGE_CAPTURE) } }
     LaunchedEffect(lifecycleOwner, controller) { controller.bindToLifecycle(lifecycleOwner) }
     LaunchedEffect(viewModel, controller) {
         viewModel.photoCapture.collect {
@@ -315,85 +353,32 @@ private fun CameraScreen(
             val file = File(directory, "photo_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg")
             val options = ImageCapture.OutputFileOptions.Builder(file).build()
             controller.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    processingPhoto = false
-                    viewModel.onPhotoCaptured(file.absolutePath)
-                }
-                override fun onError(exception: ImageCaptureException) {
-                    processingPhoto = false
-                    viewModel.onPhotoCaptureFailed()
-                }
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) { processingPhoto = false; viewModel.onPhotoCaptured(file.absolutePath) }
+                override fun onError(exception: ImageCaptureException) { processingPhoto = false; viewModel.onPhotoCaptureFailed() }
             })
         }
     }
     if (!permission) {
         Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text(
-                state.name ?: state.item?.name ?: "Фотография вещи",
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(20.dp))
-            Text("Нужен доступ к камере", fontSize = 28.sp, textAlign = TextAlign.Center)
-            Button(onClick = requestPermission, modifier = Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
+            Text(state.name ?: state.item?.name ?: "Фотография вещи", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp)); Text("Нужен доступ к камере", fontSize = 28.sp, textAlign = TextAlign.Center)
+            Button(requestPermission, Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
         }
-    } else {
-        Box(Modifier.fillMaxSize()) {
-            AndroidView(
-                factory = { PreviewView(it).apply { this.controller = controller } },
-                modifier = Modifier.fillMaxSize(),
-            )
-            Text(
-                "Нажмите Volume+ или Volume− для фото",
-                modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(alpha = .65f)).padding(18.dp),
-                color = Color.White,
-                fontSize = 20.sp,
-                textAlign = TextAlign.Center,
-            )
-            Text(
-                text = state.name ?: state.item?.name ?: "Фотография вещи",
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = .72f))
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-                color = Color.White,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-            )
-            if (processingPhoto) {
-                Box(
-                    Modifier.fillMaxSize().background(Color.Black.copy(alpha = .48f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                        CircularProgressIndicator(color = Color.White, strokeWidth = 6.dp, modifier = Modifier.size(64.dp))
-                        Text("Обрабатываю фото…", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
+    } else Box(Modifier.fillMaxSize()) {
+        AndroidView({ PreviewView(it).apply { this.controller = controller } }, Modifier.fillMaxSize())
+        Text("Нажмите Volume+ или Volume− для фото", modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(.65f)).padding(18.dp), color = Color.White, fontSize = 20.sp, textAlign = TextAlign.Center)
+        Text(state.name ?: state.item?.name ?: "Фотография вещи", modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(.72f)).padding(16.dp), color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        if (processingPhoto) Box(Modifier.fillMaxSize().background(Color.Black.copy(.48f)), Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) { CircularProgressIndicator(color = Color.White, strokeWidth = 6.dp, modifier = Modifier.size(64.dp)); Text("Обрабатываю фото…", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold) } }
     }
 }
 
 @Composable
 private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, onDone: () -> Unit) {
-    val bitmap = remember(state.path) { state.path.takeIf { it.isNotBlank() }?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .resilientReviewInput(onRedo, onDone),
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            ReviewZone("ПЕРЕДЕЛАТЬ", Color(0xFFFFE0B2), Modifier.weight(0.22f))
-            Box(Modifier.fillMaxWidth().weight(0.56f).background(Color(0xFF202020)), contentAlignment = Alignment.Center) {
-                if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                else Text("Фото отсутствует", color = Color.White, fontSize = 24.sp)
-            }
-            ReviewZone("ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(0.22f))
-        }
+    val bitmap = remember(state.path) { BitmapFactory.decodeFile(state.path)?.asImageBitmap() }
+    Column(Modifier.fillMaxSize().resilientReviewInput(onRedo, onDone)) {
+        ReviewZone("ПЕРЕДЕЛАТЬ", Color(0xFFFFE0B2), Modifier.weight(.22f))
+        Box(Modifier.fillMaxWidth().weight(.56f).padding(vertical = 12.dp).background(Color(0xFF202020)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", color = Color.White, fontSize = 24.sp) }
+        ReviewZone("ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(.22f))
     }
 }
 
@@ -401,125 +386,138 @@ private fun Modifier.resilientReviewInput(onRedo: () -> Unit, onDone: () -> Unit
     awaitPointerEventScope {
         var lastActionAt = 0L
         while (true) {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            val action = when {
-                down.position.y < size.height * .28f -> onRedo
-                down.position.y > size.height * .72f -> onDone
-                else -> null
-            }
-            var released = false
-            while (!released) {
-                val event = awaitPointerEvent()
-                val pointer = event.changes.firstOrNull { it.id == down.id }
+            val down = awaitFirstDown(false)
+            val action = when { down.position.y < size.height * .28f -> onRedo; down.position.y > size.height * .72f -> onDone; else -> null }
+            while (true) {
+                val pointer = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
                 pointer?.consume()
-                released = pointer == null || !pointer.pressed
+                if (pointer?.pressed == false || pointer == null) break
             }
             val now = System.currentTimeMillis()
-            if (action != null && now - lastActionAt >= 500) {
-                lastActionAt = now
-                action()
-            }
+            if (action != null && now - lastActionAt >= 500) { lastActionAt = now; action() }
         }
     }
 }
 
-@Composable
-private fun ReviewZone(label: String, color: Color, modifier: Modifier) {
-    Box(modifier.fillMaxWidth().background(color), contentAlignment = Alignment.Center) {
-        Text(label, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-    }
-}
+@Composable private fun ReviewZone(label: String, color: Color, modifier: Modifier) = Box(modifier.fillMaxWidth().background(color), Alignment.Center) { Text(label, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
 
 @Composable
 private fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainViewModel) {
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Text("Поднесите одну новую метку", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        Text("Вещь: ${state.name}", fontSize = 22.sp)
-        if (viewModel.fakeGateway != null) Button(onClick = viewModel::simulateTriggerPress, modifier = Modifier.fillMaxWidth().height(64.dp)) { Text("ДЕМО: СЧИТАТЬ МЕТКУ", fontSize = 19.sp) }
+        Text("Вещь: ${state.name}", fontSize = 24.sp, color = Color(0xFF1565C0))
+        if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(64.dp)) { Text("ДЕМО: СЧИТАТЬ МЕТКУ", fontSize = 19.sp) }
     }
 }
 
 @Composable
 private fun SearchTargetScreen(state: AppState.SearchTarget, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        ItemPreview(state.item, large = true)
+    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ItemDetails(state.item, "Поиск вещи")
         Text("Удерживайте курок и перемещайте считыватель", fontSize = 24.sp, textAlign = TextAlign.Center)
-        HoldTriggerButton(onStart = viewModel::onTriggerPressed, onStop = viewModel::onTriggerReleased)
+        HoldTriggerButton(viewModel::onTriggerPressed, viewModel::onTriggerReleased)
     }
 }
 
 @Composable
 private fun HoldTriggerButton(onStart: () -> Unit, onStop: () -> Unit) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(72.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF2E7D32))
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitFirstDown(false)
-                        down.consume()
-                        onStart()
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val pointer = event.changes.firstOrNull { it.id == down.id }
-                            pointer?.consume()
-                            if (pointer?.pressed == false) break
-                        }
-                        onStop()
-                    }
+    Box(Modifier.fillMaxWidth().height(82.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFF2E7D32)).pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val down = awaitFirstDown(false); down.consume(); onStart()
+                while (true) {
+                    val pointer = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                    pointer?.consume()
+                    if (pointer?.pressed == false || pointer == null) break
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) { Text("УДЕРЖИВАТЬ КУРOК", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+                onStop()
+            }
+        }
+    }, Alignment.Center) { Text("УДЕРЖИВАТЬ КУРОК", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
 }
 
 @Composable
 private fun SearchProgressScreen(state: AppState.RfidSearch) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        ItemPreview(state.item, large = true)
-        Text("Ищу…", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        Text("Текущая мощность: ${state.power}", fontSize = 22.sp)
+    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ItemDetails(state.item, "Ищем")
+        Text("Мощность: ${state.power}", fontSize = 22.sp)
+        Text("Отпустите курок, когда увидите вещь", fontSize = 23.sp, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+private fun SearchPausedScreen(state: AppState.SearchPaused, viewModel: MainViewModel) {
+    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ItemDetails(state.item, "Поиск приостановлен")
+        Text(if (state.lastDetection) "Метка подавала сигнал" else "Сигнал пока не зафиксирован", fontSize = 22.sp, textAlign = TextAlign.Center)
+        Text("Коротко нажмите курок для новой проверки. Удерживайте 1 секунду, чтобы продолжить поиск.", fontSize = 22.sp, textAlign = TextAlign.Center)
+        Button(viewModel::finishSearch, Modifier.fillMaxWidth().height(74.dp)) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+        HoldTriggerButton(viewModel::onTriggerPressed, viewModel::onTriggerReleased)
     }
 }
 
 @Composable
 private fun FoundScreen(state: AppState.Found, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("ВЕЩЬ НАЙДЕНА", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20))
-        ItemPreview(state.item, large = true)
-        Button(onClick = viewModel::closeService, modifier = Modifier.fillMaxWidth().height(60.dp)) { Text("Готово", fontSize = 20.sp) }
+    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ItemDetails(state.item, "ВЕЩЬ НАЙДЕНА")
+        Spacer(Modifier.height(16.dp))
+        Button(viewModel::closeService, Modifier.fillMaxWidth().height(70.dp)) { Text("ГОТОВО", fontSize = 22.sp) }
     }
 }
 
 @Composable
 private fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ItemPreview(item, large = true)
-        Text("Действия с вещью", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        Button(onClick = { viewModel.changeTag(item) }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("Изменить метку", fontSize = 18.sp) }
-        Button(onClick = { viewModel.rename(item) }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("Изменить название", fontSize = 18.sp) }
-        Button(onClick = { viewModel.retakePhoto(item) }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("Переделать фото", fontSize = 18.sp) }
-        OutlinedButton(onClick = { viewModel.delete(item) }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("Удалить", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
+    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ItemDetails(item, item.name, showItemName = false)
+        Text("Нажмите кнопку с нужным действием", fontSize = 23.sp, textAlign = TextAlign.Center)
+        Button(
+            { viewModel.startSearching(item) },
+            Modifier.fillMaxWidth().height(76.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+        ) { Text("ИСКАТЬ ВЕЩЬ", fontSize = 19.sp) }
+        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
     }
 }
 
 @Composable
+private fun ItemDetails(item: Item, title: String, showItemName: Boolean = true) {
+    Text(title, modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+    val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
+    Box(Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) {
+        if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", fontSize = 22.sp)
+    }
+    if (showItemName) Text(item.name, modifier = Modifier.fillMaxWidth(), fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+}
+
+@Composable
 private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel: MainViewModel) {
-    val pages = items.chunked(3)
-    val page = pages.getOrNull(state.page).orEmpty()
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Каталог", modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        page.forEach { item ->
-            Card(
-                modifier = Modifier.fillMaxWidth().weight(1f).clickable { viewModel.selectCatalogItem(item) },
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-            ) { ItemPreview(item, large = false, modifier = Modifier.padding(10.dp)) }
+    val listState = rememberLazyListState()
+    LaunchedEffect(state.selectedIndex, items.size) { if (items.isNotEmpty()) listState.animateScrollToItem(state.selectedIndex.coerceIn(0, items.lastIndex)) }
+    Box(Modifier.fillMaxSize().padding(14.dp)) {
+        Column(Modifier.fillMaxSize()) {
+            Text("Каталог", modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Text("Volume+ — вверх   Volume− — вниз   Нажмите на вещь", modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), fontSize = 16.sp, textAlign = TextAlign.Center)
+            Box(Modifier.weight(1f)) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
+                    itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
+                        Card(Modifier.fillMaxWidth().height(140.dp).clickable { viewModel.selectCatalogItem(item) }, colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) Color(0xFFE3F2FD) else Color.White)) {
+                            ItemPreview(item, false, Modifier.padding(10.dp))
+                        }
+                    }
+                }
+                if (items.isEmpty()) Text("Каталог пуст", modifier = Modifier.align(Alignment.Center), fontSize = 24.sp)
+                if (items.size > 1) Canvas(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(8.dp).padding(vertical = 6.dp)) {
+                    val track = size.height
+                    val thumb = (track / items.size).coerceAtLeast(28f)
+                    val offset = if (items.size <= 1) 0f else (track - thumb) * state.selectedIndex / (items.size - 1).toFloat()
+                    drawRoundRect(Color(0xFF78909C), androidx.compose.ui.geometry.Offset(0f, offset), androidx.compose.ui.geometry.Size(size.width, thumb), androidx.compose.ui.geometry.CornerRadius(size.width, size.width))
+                }
+            }
+            Text("${if (items.isEmpty()) 0 else state.selectedIndex + 1} из ${items.size}", modifier = Modifier.fillMaxWidth().padding(top = 8.dp), fontSize = 19.sp, textAlign = TextAlign.Center)
         }
-        if (page.isEmpty()) Text("Каталог пуст", fontSize = 24.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
-        Text("Страница ${if (pages.isEmpty()) 0 else state.page + 1} из ${pages.size}", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 18.sp)
     }
 }
 
@@ -527,74 +525,34 @@ private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel:
 private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifier) {
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.size(if (large) 180.dp else 96.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFE0E0E0)), contentAlignment = Alignment.Center) {
-            if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            else Text("Фото", fontSize = if (large) 22.sp else 16.sp)
-        }
-        Text(item.name, fontSize = if (large) 30.sp else 24.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.size(if (large) 180.dp else 96.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото", fontSize = if (large) 22.sp else 16.sp) }
+        Text(item.name, fontSize = if (large) 30.sp else 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
     }
 }
 
-@Composable
-private fun MessageScreen(text: String, onNext: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(text, fontSize = 28.sp, textAlign = TextAlign.Center)
-        Button(onClick = onNext, modifier = Modifier.fillMaxWidth().height(60.dp)) { Text("Понятно", fontSize = 20.sp) }
-    }
-}
-
-@Composable
-private fun ConfirmScreen(text: String, onConfirm: () -> Unit, onCancel: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(text, fontSize = 28.sp, textAlign = TextAlign.Center)
-        Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth().height(60.dp)) { Text("Подтвердить", fontSize = 20.sp) }
-        OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth().height(60.dp)) { Text("Отмена", fontSize = 20.sp) }
-    }
-}
+@Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Button(onNext, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОНЯТНО", fontSize = 20.sp) } } }
+@Composable private fun ConfirmScreen(text: String, onConfirm: () -> Unit, onCancel: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Button(onConfirm, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОДТВЕРДИТЬ", fontSize = 20.sp) }; OutlinedButton(onCancel, Modifier.fillMaxWidth().height(60.dp)) { Text("ОТМЕНА", fontSize = 20.sp) } } }
 
 @Composable
 private fun ServiceScreen(viewModel: MainViewModel) {
     val fake = viewModel.fakeGateway
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
-    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            TextButton(onClick = viewModel::closeService) { Text("Закрыть") }
-        }
+    Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
         Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL"}")
-        OutlinedTextField(
-            value = readerAddress,
-            onValueChange = { readerAddress = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Bluetooth MAC считывателя") },
-        )
+        Text("Движок: ${viewModel.currentVoiceBackend()}")
+        Text("Whisper model: ${viewModel.currentWhisperVariant()}")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedButton(onClick = { viewModel.setReaderAddress(readerAddress); viewModel.simulateConnect() }) { Text("connect") }
-            OutlinedButton(onClick = viewModel::simulateDisconnect) { Text("disconnect") }
-            OutlinedButton(onClick = viewModel::simulateTriggerPress) { Text("trigger") }
+            OutlinedButton({ viewModel.setVoiceBackend(VoiceBackend.WHISPER) }) { Text("Whisper q5_1") }
+            OutlinedButton({ viewModel.setVoiceBackend(VoiceBackend.VOSK) }) { Text("Vosk") }
         }
+        OutlinedTextField(readerAddress, { readerAddress = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Bluetooth MAC считывателя") })
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { OutlinedButton({ viewModel.setReaderAddress(readerAddress); viewModel.simulateConnect() }) { Text("connect") }; OutlinedButton(viewModel::simulateDisconnect) { Text("disconnect") }; OutlinedButton(viewModel::simulateTriggerPress) { Text("trigger") } }
         Text("Сценарий первичного чтения:")
-        FakeScenario.values().forEach { scenario ->
-            OutlinedButton(onClick = { viewModel.setFakeScenario(scenario) }, modifier = Modifier.fillMaxWidth()) { Text(scenario.name) }
-        }
+        FakeScenario.values().forEach { scenario -> OutlinedButton({ viewModel.setFakeScenario(scenario) }, Modifier.fillMaxWidth()) { Text(scenario.name) } }
         Text("Тест голосовой команды", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        OutlinedTextField(
-            value = voiceText,
-            onValueChange = { voiceText = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Например: найди очки") },
-        )
-        Button(
-            onClick = {
-                viewModel.submitServiceVoice(voiceText)
-                voiceText = ""
-            },
-            enabled = voiceText.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Отправить команду") }
-        Text("После выбора сценария нажмите trigger. Сервисный экран предназначен только для разработчика.", fontSize = 14.sp)
+        OutlinedTextField(voiceText, { voiceText = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Например: найди очки") })
+        Button({ viewModel.submitServiceVoice(voiceText); voiceText = "" }, enabled = voiceText.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("ОТПРАВИТЬ КОМАНДУ") }
     }
 }

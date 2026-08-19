@@ -12,11 +12,19 @@ val localProperties = Properties().also { properties ->
 }
 val configuredVoskModel = providers.gradleProperty("voskModelDir")
     .orElse(localProperties.getProperty("voskModelDir") ?: "")
+val configuredWhisperModelDir = providers.gradleProperty("whisperModelDir")
+    .orElse(localProperties.getProperty("whisperModelDir") ?: "")
+val configuredWhisperVariant = providers.gradleProperty("whisperModelVariant")
+    .orElse(localProperties.getProperty("whisperModelVariant") ?: "q5_1")
+val configuredNdkDir = providers.environmentVariable("ANDROID_NDK_HOME")
+    .orElse("${System.getenv("LOCALAPPDATA") ?: ""}/Android/Sdk/ndk/26.3.11579264")
+val usableNdk = configuredNdkDir.orNull?.let { File(it, "source.properties").isFile } == true
 fun resolveVoskModelPath(path: String): File {
     val candidate = File(path)
     return if (candidate.isAbsolute) candidate else rootProject.file(path)
 }
 val generatedVoskAssets = layout.buildDirectory.dir("generated/vosk-assets")
+val generatedWhisperAssets = layout.buildDirectory.dir("generated/whisper-assets")
 val prepareVoskModel by tasks.registering(Sync::class) {
     onlyIf {
         val path = configuredVoskModel.orNull.orEmpty()
@@ -24,6 +32,16 @@ val prepareVoskModel by tasks.registering(Sync::class) {
     }
     from(configuredVoskModel.map(::resolveVoskModelPath))
     into(generatedVoskAssets.map { it.dir("vosk-model") })
+}
+val prepareWhisperModels by tasks.registering(Sync::class) {
+    onlyIf {
+        val path = configuredWhisperModelDir.orNull.orEmpty()
+        path.isNotBlank() && resolveVoskModelPath(path).isDirectory
+    }
+    from(configuredWhisperModelDir.map(::resolveVoskModelPath)) {
+        include("ggml-base-q5_1.bin")
+    }
+    into(generatedWhisperAssets.map { it.dir("whisper-model") })
 }
 
 android {
@@ -38,6 +56,17 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+        if (usableNdk) ndk { abiFilters += listOf("arm64-v8a") }
+    }
+
+    if (usableNdk) {
+        ndkVersion = "26.3.11579264"
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
     }
 
     flavorDimensions += "reader"
@@ -64,6 +93,7 @@ android {
 
     sourceSets["main"].assets.srcDir("src/main/assets")
     sourceSets["main"].assets.srcDir(generatedVoskAssets)
+    sourceSets["main"].assets.srcDir(generatedWhisperAssets)
     sourceSets["hardware"].java.srcDir("src/hardware/kotlin")
 
     buildFeatures {
@@ -123,10 +153,22 @@ tasks.register("checkVoiceModel") {
 
 tasks.matching { it.name.contains("merge") && it.name.endsWith("Assets") }.configureEach {
     dependsOn(prepareVoskModel)
+    dependsOn(prepareWhisperModels)
 }
 
 // Lint also snapshots the generated assets; declare the same dependency so
 // Gradle's task validation cannot observe a stale or missing model directory.
 tasks.matching { it.name.contains("lint", ignoreCase = true) }.configureEach {
     dependsOn(prepareVoskModel)
+    dependsOn(prepareWhisperModels)
+}
+
+tasks.register("checkWhisperModels") {
+    doLast {
+        val directory = configuredWhisperModelDir.orNull?.takeIf { it.isNotBlank() }?.let(::resolveVoskModelPath)
+        val q5 = directory?.resolve("ggml-base-q5_1.bin")
+        val q8 = directory?.resolve("ggml-base-q8_0.bin")
+        logger.lifecycle("Whisper q5_1: ${q5?.takeIf { it.isFile }?.length() ?: 0} bytes")
+        logger.lifecycle("Whisper q8_0: ${q8?.takeIf { it.isFile }?.length() ?: 0} bytes")
+    }
 }

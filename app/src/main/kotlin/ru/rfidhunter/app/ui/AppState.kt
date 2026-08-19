@@ -34,6 +34,10 @@ sealed interface AppState {
         val renameItem: Item? = null,
         val attempt: Int = 0,
         val isReady: Boolean = false,
+        val isProcessing: Boolean = false,
+        val instruction: String? = null,
+        val missingSearchQuery: String? = null,
+        val sessionId: Long = 0L,
     ) : AppState
     /** A recognized phrase must be confirmed before the next action starts. */
     data class VoiceConfirmation(
@@ -41,13 +45,19 @@ sealed interface AppState {
         val text: String,
         val pendingEpc: String? = null,
         val renameItem: Item? = null,
+        val suggestedItem: Item? = null,
     ) : AppState
     data object AskSearchCommand : AppState
     data class SearchTarget(val item: Item) : AppState
     data class RfidSearch(val item: Item, val power: Int = 30) : AppState
+    data class SearchPaused(
+        val item: Item,
+        val power: Int,
+        val lastDetection: Boolean = false,
+    ) : AppState
     data class Found(val item: Item) : AppState
     data class ItemCard(val item: Item) : AppState
-    data class Catalog(val page: Int = 0) : AppState
+    data class Catalog(val selectedIndex: Int = 0) : AppState
     data class MultipleTags(val message: String = "Найдено несколько меток") : AppState
     data class Message(val text: String, val returnTo: AppState = Idle) : AppState
     data object Service : AppState

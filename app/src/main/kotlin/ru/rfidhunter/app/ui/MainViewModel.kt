@@ -12,26 +12,35 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.domain.ConnectionState
+import ru.rfidhunter.app.domain.moveCatalogIndex
 import ru.rfidhunter.app.domain.FakeScenario
+import ru.rfidhunter.app.domain.InactivityPolicy
 import ru.rfidhunter.app.domain.InventoryConfig
 import ru.rfidhunter.app.domain.Item
+import ru.rfidhunter.app.domain.SearchPowerPolicy
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
-import ru.rfidhunter.app.domain.SearchPowerPolicy
+import ru.rfidhunter.app.domain.TriggerGesture
+import ru.rfidhunter.app.domain.TriggerGestureClassifier
 import ru.rfidhunter.app.domain.VoiceCommand
-import ru.rfidhunter.app.domain.findBestItem
+import ru.rfidhunter.app.domain.CatalogMatchKind
+import ru.rfidhunter.app.domain.findBestItemMatch
 import ru.rfidhunter.app.domain.normalizeText
 import ru.rfidhunter.app.domain.parseVoiceCommand
 import ru.rfidhunter.app.hardware.FakeRfidGateway
 import ru.rfidhunter.app.hardware.RfidGateway
 import ru.rfidhunter.app.voice.FakeVoiceRecognizer
-import ru.rfidhunter.app.voice.VoskVoiceRecognizer
+import ru.rfidhunter.app.voice.OfflineVoiceEngine
+import ru.rfidhunter.app.voice.VoiceBackend
 import ru.rfidhunter.app.voice.VoiceModelInstaller
+import ru.rfidhunter.app.voice.VoskVoiceRecognizer
+import ru.rfidhunter.app.voice.WhisperVoiceRecognizer
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as RfidHunterApplication
@@ -39,8 +48,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val items = repository.items.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val gateway: RfidGateway = app.rfidGateway
     val fakeGateway: FakeRfidGateway? = gateway as? FakeRfidGateway
-    private val voice = VoskVoiceRecognizer(application)
     val fakeVoice = FakeVoiceRecognizer()
+
+    private var whisperVariant = "q5_1"
+    private var whisper = WhisperVoiceRecognizer(application, whisperVariant)
+    private val vosk = VoskVoiceRecognizer(application)
+    private var voiceEngine = OfflineVoiceEngine(application, whisper, vosk).apply {
+        backend = VoiceBackend.WHISPER
+    }
+    private val _voiceBackend = MutableStateFlow(VoiceBackend.WHISPER)
+    val voiceBackend: StateFlow<VoiceBackend> = _voiceBackend.asStateFlow()
 
     private val _state = MutableStateFlow<AppState>(AppState.Idle)
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -50,27 +67,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val photoFeedback = _photoFeedback.asSharedFlow()
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val events = _events.asSharedFlow()
+
     private var inventoryJob: Job? = null
     private var voiceJob: Job? = null
+    private var voiceSessionId = 0L
     private var captureReads = false
+    private var photoCaptureInProgress = false
     private val readBuffer = mutableListOf<TagRead>()
     private val searchPowerPolicy = SearchPowerPolicy()
+    private val triggerGestureClassifier = TriggerGestureClassifier(1_000)
+    private var triggerPressedAt = 0L
+    private val inactivityPolicy = InactivityPolicy()
+    @Volatile private var lastActivityAt = System.currentTimeMillis()
 
     val connectionState: StateFlow<ConnectionState> = gateway.connectionState
 
     init {
         viewModelScope.launch { repository.seedIfEmpty() }
-        // If a Russian Vosk model was bundled into assets, copy it once to the
-        // app-private directory. With no model present the mock/service text
-        // path remains available and no network access is attempted.
         viewModelScope.launch {
-            // Copying and loading the model while the app is idle removes the
-            // cold-start gap from the first spoken phrase.
-            val installed = VoiceModelInstaller.installFromAssets(application)
-            if (installed) voice.prepare()
+            VoiceModelInstaller.installWhisperFromAssets(application, whisperVariant)
+            voiceEngine.prepare()
+            // Vosk remains installed for an explicit A/B comparison from the
+            // service screen, but it must not delay q5_1 startup.
+            VoiceModelInstaller.installFromAssets(application)
         }
         viewModelScope.launch {
-            gateway.tagReads.collectLatest { if (captureReads) synchronized(readBuffer) { readBuffer += it } }
+            gateway.tagReads.collectLatest {
+                if (captureReads) synchronized(readBuffer) { readBuffer += it }
+            }
         }
         viewModelScope.launch {
             gateway.triggerEvents.collectLatest { event ->
@@ -80,20 +104,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch {
+            while (isActive) {
+                delay(60_000)
+                if (inactivityPolicy.isExpired(lastActivityAt, System.currentTimeMillis())) expireInactivity()
+            }
+        }
     }
 
     fun connectReader() = viewModelScope.launch {
+        markActivity()
         gateway.connect()
-        emitEvent("Попытка подключения считывателя")
+        emitEvent("Подключаю считыватель")
     }
 
-    fun disconnectReader() = viewModelScope.launch { gateway.disconnect() }
+    fun disconnectReader() = viewModelScope.launch {
+        markActivity()
+        gateway.disconnect()
+    }
 
     fun onTriggerPressed() {
+        markActivity()
+        triggerPressedAt = System.currentTimeMillis()
         when (val current = _state.value) {
             AppState.Idle, is AppState.Catalog -> startInitialCheck()
             is AppState.SearchTarget -> startSearch(current.item)
-            is AppState.RfidSearch -> Unit
+            is AppState.RfidSearch, is AppState.SearchPaused -> Unit
             is AppState.WaitForNewTag -> startNewTagCheck(current.name, current.photoPath, current.replacingItem)
             is AppState.ItemCard -> emitEvent("Выберите действие на карточке")
             is AppState.VoiceListening -> listenVoice()
@@ -103,32 +139,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onTriggerReleased() {
-        if (_state.value is AppState.RfidSearch) {
-            inventoryJob?.cancel()
-            _state.value = AppState.SearchTarget((_state.value as AppState.RfidSearch).item)
-            emitEvent("Поиск остановлен")
+        markActivity()
+        val pressedAt = triggerPressedAt
+        triggerPressedAt = 0L
+        when (val current = _state.value) {
+            is AppState.RfidSearch -> pauseSearch(current)
+            is AppState.SearchPaused -> {
+                val gesture = triggerGestureClassifier.classify(pressedAt, System.currentTimeMillis())
+                if (gesture == TriggerGesture.LONG) startSearch(current.item, current.power) else startInitialCheck()
+            }
+            else -> Unit
         }
+    }
+
+    private fun pauseSearch(current: AppState.RfidSearch) {
+        inventoryJob?.cancel()
+        inventoryJob = null
+        captureReads = false
+        val detected = synchronized(readBuffer) { readBuffer.any { it.epc.equals(current.item.epc, true) } }
+        _state.value = AppState.SearchPaused(current.item, current.power, detected)
+        emitEvent("Поиск приостановлен. Удерживайте курок для продолжения")
     }
 
     private fun startInitialCheck() {
         if (inventoryJob?.isActive == true) return
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
-            collectInventory(power = 5, duration = 850)
+            collectInventory(searchPowerPolicy.minPower, 850)
             val unique = synchronized(readBuffer) { readBuffer.distinctBy { it.epc.uppercase() } }
             when {
-                unique.isEmpty() -> {
-                    startVoiceInput(VoiceInputMode.SEARCH)
-                }
+                unique.isEmpty() -> startVoiceInput(VoiceInputMode.SEARCH)
                 unique.size > 1 -> {
                     _state.value = AppState.MultipleTags()
                     emitEvent("Найдено несколько меток. Оставьте одну")
                 }
                 else -> {
                     val item = repository.getByEpc(unique.first().epc)
-                    if (item == null) {
-                        startVoiceInput(VoiceInputMode.ADD, pendingEpc = unique.first().epc)
-                    } else {
+                    if (item == null) startVoiceInput(VoiceInputMode.ADD, pendingEpc = unique.first().epc)
+                    else {
                         _state.value = AppState.ItemCard(item)
                         emitEvent("Это ${item.name}. Открыта карточка вещи")
                     }
@@ -141,7 +189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (inventoryJob?.isActive == true) return
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
-            collectInventory(power = 5, duration = 850)
+            collectInventory(searchPowerPolicy.minPower, 850)
             val unique = synchronized(readBuffer) { readBuffer.distinctBy { it.epc.uppercase() } }
             when {
                 unique.size == 1 && repository.getByEpc(unique.first().epc) == null -> {
@@ -172,113 +220,142 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun collectInventory(power: Int, duration: Long) {
         synchronized(readBuffer) { readBuffer.clear() }
         captureReads = true
-        gateway.setReadPower(power)
-        gateway.startInventory(InventoryConfig(power, duration))
-        delay(duration)
-        gateway.stopInventory()
-        captureReads = false
-    }
-
-    private fun startSearch(item: Item) {
-        if (inventoryJob?.isActive == true) return
-        inventoryJob = viewModelScope.launch {
-            _state.value = AppState.RfidSearch(item, 30)
-            var power = searchPowerPolicy.maxPower
-            var found = false
-            repeat(5) {
-                if (!isActive) return@repeat
-                synchronized(readBuffer) { readBuffer.clear() }
-                captureReads = true
-                gateway.setReadPower(power)
-                gateway.startInventory(InventoryConfig(power, 500))
-                delay(500)
-                gateway.stopInventory()
-                captureReads = false
-                val reads = synchronized(readBuffer) { readBuffer.filter { it.epc.equals(item.epc, true) } }
-                val strong = reads.map { it.rssi }.average().takeIf { !it.isNaN() }?.let { it > -55 } == true
-                if (reads.isNotEmpty()) {
-                    found = true
-                    emitEvent(if (strong) "Метка в зоне. Уточняем расстояние" else "Метка найдена")
-                    if (strong && power > searchPowerPolicy.minPower) {
-                        power = searchPowerPolicy.nextPower(power, detected = true, strong = true)
-                        _state.value = AppState.RfidSearch(item, power)
-                    } else return@repeat
-                } else if (power < searchPowerPolicy.maxPower) {
-                    power = searchPowerPolicy.nextPower(power, detected = false, strong = false)
-                }
-            }
-            _state.value = if (found) AppState.Found(item) else AppState.SearchTarget(item)
-            if (found) emitEvent("Вещь найдена: ${item.name}") else emitEvent("Метка пока не найдена")
+        try {
+            gateway.setReadPower(power)
+            gateway.startInventory(InventoryConfig(power, duration))
+            delay(duration)
+        } finally {
+            try { gateway.stopInventory() } catch (_: Throwable) { }
+            captureReads = false
         }
     }
 
+    private fun startSearch(item: Item, initialPower: Int = searchPowerPolicy.maxPower) {
+        if (inventoryJob?.isActive == true) return
+        val startingPower = initialPower.coerceIn(searchPowerPolicy.minPower, searchPowerPolicy.maxPower)
+        _state.value = AppState.RfidSearch(item, startingPower)
+        emitEvent("Ищем ${item.name}. Удерживайте курок")
+        inventoryJob = viewModelScope.launch {
+            var power = startingPower
+            try {
+                while (isActive) {
+                    synchronized(readBuffer) { readBuffer.clear() }
+                    captureReads = true
+                    gateway.setReadPower(power)
+                    gateway.startInventory(InventoryConfig(power, 450))
+                    delay(450)
+                    gateway.stopInventory()
+                    captureReads = false
+                    val reads = synchronized(readBuffer) { readBuffer.filter { it.epc.equals(item.epc, true) } }
+                    val strong = reads.map { it.rssi }.average().takeIf { !it.isNaN() }?.let { it > -55 } == true
+                    if (reads.isNotEmpty()) {
+                        emitEvent(if (strong) "Метка близко. Уточняем расстояние" else "Метка в зоне поиска")
+                        power = searchPowerPolicy.nextPower(power, detected = true, strong = strong)
+                    } else {
+                        power = searchPowerPolicy.nextPower(power, detected = false, strong = false)
+                    }
+                    _state.value = AppState.RfidSearch(item, power)
+                }
+            } finally {
+                captureReads = false
+                try { gateway.stopInventory() } catch (_: Throwable) { }
+            }
+        }
+    }
+
+    fun finishSearch() {
+        markActivity()
+        val item = when (val current = _state.value) {
+            is AppState.RfidSearch -> current.item
+            is AppState.SearchPaused -> current.item
+            else -> return
+        }
+        inventoryJob?.cancel()
+        _state.value = AppState.Found(item)
+        emitEvent("Поиск завершён: ${item.name}")
+    }
+
+    fun startSearching(item: Item) {
+        markActivity()
+        _state.value = AppState.SearchTarget(item)
+        emitEvent("Ищем ${item.name}. Удерживайте курок")
+    }
+
     fun submitVoice(text: String) {
+        markActivity()
         val value = normalizeText(text)
         when (val current = _state.value) {
             is AppState.VoiceListening -> handleRecognizedVoice(current, text)
             is AppState.VoiceConfirmation -> Unit
             is AppState.AddName -> if (value.isNotBlank()) {
-                _state.value = AppState.VoiceConfirmation(
-                    mode = VoiceInputMode.ADD,
-                    text = text.trim(),
-                    pendingEpc = current.pendingEpc,
-                    renameItem = current.renameItem,
-                )
+                _state.value = AppState.VoiceConfirmation(VoiceInputMode.ADD, text.trim(), current.pendingEpc, current.renameItem)
             }
-            AppState.AskSearchCommand -> handleSearchCommand(value)
+            AppState.AskSearchCommand -> handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), value)
             else -> emitEvent("Голосовая команда сейчас не ожидается")
         }
     }
 
-    private fun handleSearchCommand(value: String) {
-        handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), value)
-    }
-
     fun beginAddByVoice() {
+        markActivity()
         startVoiceInput(VoiceInputMode.ADD)
     }
 
-    fun openCatalog() { _state.value = AppState.Catalog(0) }
+    fun openCatalog() {
+        markActivity()
+        voiceJob?.cancel()
+        voiceJob = null
+        _state.value = AppState.Catalog(0)
+    }
 
     fun catalogPage(delta: Int) {
         val current = _state.value as? AppState.Catalog ?: return
-        val pageCount = (items.value.size + 2) / 3
-        val page = (current.page + delta).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        _state.value = current.copy(page = page)
+        val selected = moveCatalogIndex(current.selectedIndex, delta, items.value.size)
+        _state.value = current.copy(selectedIndex = selected)
+        markActivity()
     }
 
     fun selectCatalogItem(item: Item) {
-        _state.value = AppState.SearchTarget(item)
-        emitEvent("Ищем ${item.name}. Удерживайте курок")
+        markActivity()
+        _state.value = AppState.ItemCard(item)
+        emitEvent("Открыта карточка: ${item.name}")
     }
 
     fun changeTag(item: Item) {
+        markActivity()
         _state.value = AppState.WaitForNewTag(item.name, item.photoPath, replacingItem = item)
         emitEvent("Поднесите одну новую метку и нажмите курок")
     }
 
     fun rename(item: Item) {
+        markActivity()
         startVoiceInput(VoiceInputMode.ADD, renameItem = item)
     }
 
     fun retakePhoto(item: Item) {
+        markActivity()
         _state.value = AppState.Camera(PhotoContext.EDIT_EXISTING, item = item)
         emitEvent("Сделайте новую фотографию кнопкой громкости")
     }
 
     fun delete(item: Item) {
-        _state.value = AppState.Message("Удалить ${item.name}? Нажмите подтвердить", AppState.ItemCard(item))
+        markActivity()
+        _state.value = AppState.Message("Удалить ${item.name}?", AppState.ItemCard(item))
         emitEvent("Удаление требует подтверждения")
     }
 
     fun confirmMessage(confirmed: Boolean) {
+        markActivity()
         val current = _state.value as? AppState.Message ?: return
         if (!confirmed) {
             _state.value = current.returnTo
             return
         }
-        val item = (current.returnTo as? AppState.ItemCard)?.item
-        if (item != null) viewModelScope.launch {
+        if (current.returnTo is AppState.VoiceListening) {
+            _state.value = current.returnTo
+            return
+        }
+        val item = (current.returnTo as? AppState.ItemCard)?.item ?: return
+        viewModelScope.launch {
             repository.delete(item)
             _state.value = AppState.Idle
             emitEvent("Вещь удалена")
@@ -286,28 +363,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onPhotoCaptured(path: String) {
+        photoCaptureInProgress = false
+        markActivity()
         val current = _state.value as? AppState.Camera ?: return
         _state.value = AppState.PhotoReview(path, current.context, current.item, current.name, current.epc)
         emitEvent("Проверьте фотографию")
     }
 
     fun onPhotoCaptureFailed() {
+        photoCaptureInProgress = false
+        markActivity()
         emitEvent("Не удалось сохранить фотографию. Повторите")
     }
 
-    fun requestPhotoCapture() { _photoCapture.tryEmit(Unit) }
+    fun requestPhotoCapture() {
+        photoCaptureInProgress = true
+        markActivity()
+        _photoCapture.tryEmit(Unit)
+    }
 
     fun requestPhotoCaptureWithFeedback() {
+        photoCaptureInProgress = true
+        markActivity()
         _photoFeedback.tryEmit(Unit)
         _photoCapture.tryEmit(Unit)
     }
 
     fun redoPhoto() {
+        markActivity()
         val current = _state.value as? AppState.PhotoReview ?: return
         _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
     }
 
     fun acceptPhoto() {
+        markActivity()
         val current = _state.value as? AppState.PhotoReview ?: return
         when (current.context) {
             PhotoContext.NEW_WITH_TAG -> viewModelScope.launch {
@@ -317,14 +406,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             PhotoContext.MANUAL_NEW -> _state.value = AppState.WaitForNewTag(current.name.orEmpty(), current.path)
             PhotoContext.EDIT_EXISTING -> viewModelScope.launch {
-                current.item?.let { repository.update(it.copy(photoPath = current.path)) }
-                _state.value = current.item?.let { AppState.ItemCard(it.copy(photoPath = current.path)) } ?: AppState.Idle
+                val updated = current.item?.copy(photoPath = current.path)
+                if (updated != null) repository.update(updated)
+                _state.value = updated?.let(AppState::ItemCard) ?: AppState.Idle
                 emitEvent("Фотография обновлена")
             }
         }
     }
 
     fun onVolumeKey(delta: Int = 0) {
+        markActivity()
         when (_state.value) {
             is AppState.Camera -> requestPhotoCaptureWithFeedback()
             is AppState.Catalog -> catalogPage(delta)
@@ -333,82 +424,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun goBack() {
+        markActivity()
         when (val current = _state.value) {
             AppState.Idle -> Unit
-            AppState.InitialChecking -> {
-                inventoryJob?.cancel()
-                captureReads = false
-                viewModelScope.launch { gateway.stopInventory() }
-                _state.value = AppState.Idle
-            }
-            is AppState.AddName -> _state.value = current.renameItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
-            is AppState.Camera -> _state.value = if (current.context == PhotoContext.EDIT_EXISTING) {
-                current.item?.let { AppState.ItemCard(it) } ?: AppState.Idle
-            } else AppState.Idle
+            AppState.InitialChecking -> cancelInventoryAndGoIdle()
+            is AppState.AddName -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
+            is AppState.Camera -> _state.value = if (current.context == PhotoContext.EDIT_EXISTING) current.item?.let(AppState::ItemCard) ?: AppState.Idle else AppState.Idle
             is AppState.PhotoReview -> _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
-            is AppState.WaitForNewTag -> _state.value = current.replacingItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
+            is AppState.WaitForNewTag -> _state.value = current.replacingItem?.let(AppState::ItemCard) ?: AppState.Idle
             is AppState.VoiceListening -> {
                 voiceJob?.cancel()
-                _state.value = current.renameItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
+                _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
             }
-            is AppState.VoiceConfirmation -> {
-                _state.value = current.renameItem?.let { AppState.ItemCard(it) } ?: AppState.Idle
-            }
-            AppState.AskSearchCommand -> _state.value = AppState.Idle
-            is AppState.SearchTarget -> _state.value = AppState.Idle
-            is AppState.RfidSearch -> {
-                inventoryJob?.cancel()
-                _state.value = AppState.SearchTarget(current.item)
-            }
-            is AppState.Found -> _state.value = AppState.Idle
-            is AppState.ItemCard -> _state.value = AppState.Idle
-            is AppState.Catalog -> _state.value = AppState.Idle
-            is AppState.MultipleTags -> _state.value = AppState.Idle
+            is AppState.VoiceConfirmation -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
+            AppState.AskSearchCommand, is AppState.SearchTarget, is AppState.SearchPaused, is AppState.RfidSearch -> cancelInventoryAndGoIdle()
+            is AppState.Found, is AppState.ItemCard, is AppState.Catalog, is AppState.MultipleTags -> _state.value = AppState.Idle
             is AppState.Message -> _state.value = current.returnTo
-            AppState.Service -> _state.value = AppState.Idle
-            is AppState.Error -> _state.value = AppState.Idle
+            AppState.Service, is AppState.Error -> _state.value = AppState.Idle
         }
     }
 
-    fun openService() { _state.value = AppState.Service }
-    fun closeService() { _state.value = AppState.Idle }
+    fun openService() { markActivity(); _state.value = AppState.Service }
+    fun closeService() { markActivity(); _state.value = AppState.Idle }
 
-    fun setFakeScenario(scenario: FakeScenario) { fakeGateway?.scenario = scenario }
-    fun setFakeCustomTag(epc: String, rssi: Int) { fakeGateway?.customTags = listOf(TagRead(epc, rssi)) }
-    fun simulateTriggerPress() { onTriggerPressed() }
-    fun simulateTriggerRelease() { onTriggerReleased() }
+    fun setFakeScenario(scenario: FakeScenario) { markActivity(); fakeGateway?.scenario = scenario }
+    fun setFakeCustomTag(epc: String, rssi: Int) { markActivity(); fakeGateway?.customTags = listOf(TagRead(epc, rssi)) }
+    fun simulateTriggerPress() = onTriggerPressed()
+    fun simulateTriggerRelease() = onTriggerReleased()
     fun simulateConnect() = connectReader()
     fun simulateDisconnect() = disconnectReader()
     fun readerAddress(): String = gateway.readerAddress
-    fun setReaderAddress(address: String) { gateway.readerAddress = address.trim() }
+    fun setReaderAddress(address: String) { markActivity(); gateway.readerAddress = address.trim() }
+
+    fun currentWhisperVariant(): String = whisperVariant
+    fun currentVoiceBackend(): VoiceBackend = voiceEngine.backend
+
+    fun setVoiceBackend(backend: VoiceBackend) {
+        if (voiceEngine.backend == backend) return
+        markActivity()
+        voiceJob?.cancel()
+        voiceEngine.backend = backend
+        _voiceBackend.value = backend
+        viewModelScope.launch { voiceEngine.prepare() }
+        emitEvent(if (backend == VoiceBackend.WHISPER) "Распознавание: Whisper base q5_1" else "Распознавание: Vosk")
+    }
 
     fun listenVoice(): Job {
         voiceJob?.cancel()
-        val listening = _state.value as? AppState.VoiceListening
-        if (listening == null) return viewModelScope.launch { }
+        val listening = _state.value as? AppState.VoiceListening ?: return viewModelScope.launch { }
         if (listening.isReady) _state.value = listening.copy(isReady = false)
         val job = viewModelScope.launch {
             val startedFor = _state.value as? AppState.VoiceListening ?: return@launch
-            val installed = VoiceModelInstaller.installFromAssets(getApplication())
-            if (!installed || !voice.isAvailable) {
-                emitEvent("Русская модель Vosk не установлена")
+            when (voiceEngine.backend) {
+                VoiceBackend.WHISPER -> VoiceModelInstaller.installWhisperFromAssets(getApplication(), whisperVariant)
+                VoiceBackend.VOSK -> VoiceModelInstaller.installFromAssets(getApplication())
+            }
+            if (!voiceEngine.prepare()) {
+                emitEvent("Выбранная офлайн-модель недоступна")
                 return@launch
             }
-            val result = voice.listen {
-                val latest = _state.value as? AppState.VoiceListening
-                if (latest != null && latest.mode == startedFor.mode && latest.pendingEpc == startedFor.pendingEpc && latest.renameItem?.id == startedFor.renameItem?.id && latest.attempt == startedFor.attempt) {
-                    _state.value = latest.copy(isReady = true)
-                }
-                emitEvent("Слушаю")
-            }
+            val result = voiceEngine.listen(
+                onReady = {
+                    val latest = _state.value as? AppState.VoiceListening
+                    if (latest != null && latest.sessionId == startedFor.sessionId && latest.mode == startedFor.mode && latest.pendingEpc == startedFor.pendingEpc && latest.renameItem?.id == startedFor.renameItem?.id && latest.attempt == startedFor.attempt) {
+                        _state.value = latest.copy(isReady = true, isProcessing = false)
+                    }
+                    emitEvent("Слушаю")
+                },
+                onProcessing = {
+                    val latest = _state.value as? AppState.VoiceListening
+                    if (latest != null && latest.sessionId == startedFor.sessionId && latest.mode == startedFor.mode && latest.attempt == startedFor.attempt) {
+                        _state.value = latest.copy(isReady = false, isProcessing = true)
+                    }
+                    emitEvent("Распознаю речь")
+                },
+            )
             if (result != null) {
-                if (_state.value is AppState.VoiceListening) submitVoice(result.text)
+                val latest = _state.value as? AppState.VoiceListening
+                if (latest?.sessionId == startedFor.sessionId) submitVoice(result.text)
             } else {
                 emitEvent("Не удалось распознать. Скажите ещё раз")
                 delay(700)
                 val latest = _state.value as? AppState.VoiceListening
-                if (latest != null && latest.attempt < 2) {
-                    _state.value = latest.copy(attempt = latest.attempt + 1, isReady = false)
+                if (latest != null && latest.sessionId == startedFor.sessionId && latest.attempt < 2) {
+                    _state.value = latest.copy(attempt = latest.attempt + 1, isReady = false, isProcessing = false)
+                } else if (latest != null && latest.sessionId == startedFor.sessionId) {
+                    _state.value = AppState.Message(
+                        "Речь не распознана. Повторить?",
+                        latest.copy(attempt = 0, isReady = false, isProcessing = false),
+                    )
                 }
             }
         }
@@ -419,49 +523,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun submitServiceVoice(text: String) {
         fakeVoice.nextText = text
-        if (_state.value is AppState.Service) {
-            handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), text)
-        } else {
-            submitVoice(text)
-        }
+        if (_state.value is AppState.Service) handleRecognizedVoice(AppState.VoiceListening(VoiceInputMode.SEARCH), text)
+        else submitVoice(text)
     }
 
     fun editVoiceConfirmation() {
+        markActivity()
         val current = _state.value as? AppState.VoiceConfirmation ?: return
         startVoiceInput(current.mode, current.pendingEpc, current.renameItem)
     }
 
     fun acceptVoiceConfirmation() {
+        markActivity()
         val current = _state.value as? AppState.VoiceConfirmation ?: return
         when (current.mode) {
             VoiceInputMode.SEARCH -> {
-                val item = findBestItem(current.text, items.value)
-                if (item == null) {
-                    emitEvent("Не нашёл такую вещь. Скажите ещё раз")
-                    startVoiceInput(VoiceInputMode.SEARCH)
-                } else {
-                    _state.value = AppState.SearchTarget(item)
-                    emitEvent("Ищем ${item.name}. Удерживайте курок")
+                if (current.suggestedItem != null) {
+                    startSearching(current.suggestedItem)
+                    return
+                }
+                val cachedItems = items.value
+                if (cachedItems.isNotEmpty()) {
+                    openRecognizedSearch(current.text, cachedItems)
+                } else viewModelScope.launch {
+                    openRecognizedSearch(current.text, repository.items.first())
                 }
             }
             VoiceInputMode.ADD -> {
                 val name = current.text.trim()
-                if (name.isBlank()) {
-                    startVoiceInput(VoiceInputMode.ADD, current.pendingEpc, current.renameItem)
-                } else if (current.renameItem != null) {
-                    val item = current.renameItem
+                if (name.isBlank()) startVoiceInput(VoiceInputMode.ADD, current.pendingEpc, current.renameItem)
+                else if (current.renameItem != null) {
                     viewModelScope.launch {
-                        val updated = item.copy(name = name)
+                        val updated = current.renameItem.copy(name = name)
                         repository.update(updated)
                         _state.value = AppState.ItemCard(updated)
                         emitEvent("Название изменено")
                     }
                 } else {
-                    val photoContext = if (current.pendingEpc == null) PhotoContext.MANUAL_NEW else PhotoContext.NEW_WITH_TAG
-                    _state.value = AppState.Camera(photoContext, name = name, epc = current.pendingEpc)
+                    val context = if (current.pendingEpc == null) PhotoContext.MANUAL_NEW else PhotoContext.NEW_WITH_TAG
+                    _state.value = AppState.Camera(context, name = name, epc = current.pendingEpc)
                     emitEvent("Сделайте фотографию кнопкой громкости")
                 }
             }
+        }
+    }
+
+    private fun openRecognizedSearch(text: String, candidates: List<Item>) {
+        val match = findBestItemMatch(text, candidates)
+        if (match == null) {
+            val missingQuery = text.trim()
+            startVoiceInput(
+                mode = VoiceInputMode.SEARCH,
+                instruction = "В каталоге отсутствует вещь «$missingQuery». Назовите другую вещь.",
+                missingSearchQuery = missingQuery,
+            )
+        } else if (match.kind == CatalogMatchKind.FUZZY) {
+            _state.value = AppState.VoiceConfirmation(
+                mode = VoiceInputMode.SEARCH,
+                text = text.trim(),
+                suggestedItem = match.item,
+            )
+            emitEvent("Я услышал «${text.trim()}». Возможно, вы имели в виду «${match.item.name}»?")
+        } else {
+            startSearching(match.item)
         }
     }
 
@@ -469,26 +593,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mode: VoiceInputMode,
         pendingEpc: String? = null,
         renameItem: Item? = null,
+        instruction: String? = null,
+        missingSearchQuery: String? = null,
     ) {
         voiceJob?.cancel()
-        _state.value = AppState.VoiceListening(mode, pendingEpc, renameItem)
-        emitEvent(if (mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?")
+        _state.value = AppState.VoiceListening(
+            mode = mode,
+            pendingEpc = pendingEpc,
+            renameItem = renameItem,
+            instruction = instruction,
+            missingSearchQuery = missingSearchQuery,
+            sessionId = ++voiceSessionId,
+        )
+        emitEvent(instruction ?: if (mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?")
     }
 
     private fun handleRecognizedVoice(input: AppState.VoiceListening, text: String) {
         val raw = text.trim()
-        val value = normalizeText(raw)
-        if (value.isBlank()) {
+        if (normalizeText(raw).isBlank()) {
             startVoiceInput(input.mode, input.pendingEpc, input.renameItem)
             return
         }
         when (input.mode) {
             VoiceInputMode.SEARCH -> when (val command = parseVoiceCommand(raw)) {
-                is VoiceCommand.Search -> _state.value = AppState.VoiceConfirmation(VoiceInputMode.SEARCH, command.query)
-                is VoiceCommand.Add -> {
-                    if (command.name.isNullOrBlank()) startVoiceInput(VoiceInputMode.ADD)
-                    else _state.value = AppState.VoiceConfirmation(VoiceInputMode.ADD, command.name)
+                is VoiceCommand.Search -> {
+                    val cachedItems = items.value
+                    if (cachedItems.isNotEmpty()) {
+                        openRecognizedSearch(command.query, cachedItems)
+                    } else viewModelScope.launch {
+                        openRecognizedSearch(command.query, repository.items.first())
+                    }
                 }
+                is VoiceCommand.Add -> if (command.name.isNullOrBlank()) startVoiceInput(VoiceInputMode.ADD)
+                else _state.value = AppState.VoiceConfirmation(VoiceInputMode.ADD, command.name)
                 null -> startVoiceInput(VoiceInputMode.SEARCH)
             }
             VoiceInputMode.ADD -> {
@@ -502,11 +639,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun markActivity() { lastActivityAt = System.currentTimeMillis() }
+
+    private fun expireInactivity() {
+        if (photoCaptureInProgress) {
+            markActivity()
+            return
+        }
+        inventoryJob?.cancel()
+        voiceJob?.cancel()
+        captureReads = false
+        viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
+        _state.value = AppState.Idle
+        markActivity()
+    }
+
+    private fun cancelInventoryAndGoIdle() {
+        inventoryJob?.cancel()
+        inventoryJob = null
+        captureReads = false
+        viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
+        _state.value = AppState.Idle
+    }
+
     private fun emitEvent(value: String) { _events.tryEmit(value) }
 
     override fun onCleared() {
         voiceJob?.cancel()
-        voice.release()
+        inventoryJob?.cancel()
+        voiceEngine.release()
         super.onCleared()
     }
 }
