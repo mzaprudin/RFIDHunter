@@ -13,3 +13,4 @@ app/src/hardware/assets/vosk-model
 
 .env
 third_party
+artifacts/

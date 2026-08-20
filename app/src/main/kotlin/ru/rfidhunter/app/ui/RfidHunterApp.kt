@@ -60,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -538,11 +539,28 @@ private fun ServiceScreen(viewModel: MainViewModel) {
     val fake = viewModel.fakeGateway
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
+    var diagnosticsEnabled by remember { mutableStateOf(viewModel.diagnosticsEnabled()) }
+    var recordings by remember { mutableStateOf(viewModel.diagnosticRecordings()) }
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
         Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL"}")
         Text("Движок: ${viewModel.currentVoiceBackend()}")
         Text("Whisper model: ${viewModel.currentWhisperVariant()}")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Сохранять записи для диагностики")
+            androidx.compose.material3.Switch(
+                checked = diagnosticsEnabled,
+                onCheckedChange = { diagnosticsEnabled = it; viewModel.setDiagnosticsEnabled(it) },
+            )
+        }
+        Button({ recordings = viewModel.diagnosticRecordings() }, Modifier.fillMaxWidth()) { Text("ОБНОВИТЬ СПИСОК ЗАПИСЕЙ") }
+        recordings.take(8).forEach { file ->
+            key(file.absolutePath) {
+                OutlinedButton({ viewModel.transcribeDiagnostic(file) }, Modifier.fillMaxWidth()) {
+                    Text("ПОВТОРИТЬ: ${file.name}")
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedButton({ viewModel.setVoiceBackend(VoiceBackend.WHISPER) }) { Text("Whisper q5_1") }
             OutlinedButton({ viewModel.setVoiceBackend(VoiceBackend.VOSK) }) { Text("Vosk") }

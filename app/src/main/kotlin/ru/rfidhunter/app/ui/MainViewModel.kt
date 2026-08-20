@@ -41,6 +41,7 @@ import ru.rfidhunter.app.voice.VoiceBackend
 import ru.rfidhunter.app.voice.VoiceModelInstaller
 import ru.rfidhunter.app.voice.VoskVoiceRecognizer
 import ru.rfidhunter.app.voice.WhisperVoiceRecognizer
+import java.io.File
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as RfidHunterApplication
@@ -458,6 +459,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun currentWhisperVariant(): String = whisperVariant
     fun currentVoiceBackend(): VoiceBackend = voiceEngine.backend
+
+    fun diagnosticsEnabled(): Boolean = voiceEngine.diagnosticsEnabled
+
+    fun setDiagnosticsEnabled(enabled: Boolean) {
+        voiceEngine.diagnosticsEnabled = enabled
+        emitEvent(if (enabled) "Диагностическая запись включена" else "Диагностическая запись выключена")
+    }
+
+    fun diagnosticRecordings(): List<File> = voiceEngine.diagnosticStore.list()
+
+    fun transcribeDiagnostic(file: File) = viewModelScope.launch {
+        emitEvent("Повторно распознаю ${file.name}")
+        val result = voiceEngine.transcribeDiagnostic(file)
+        emitEvent(result?.text?.let { "Результат: $it" } ?: "Не удалось распознать запись")
+    }
 
     fun setVoiceBackend(backend: VoiceBackend) {
         if (voiceEngine.backend == backend) return

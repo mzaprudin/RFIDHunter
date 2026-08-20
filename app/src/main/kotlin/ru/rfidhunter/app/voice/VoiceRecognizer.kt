@@ -39,27 +39,20 @@ class FakeVoiceRecognizer : VoiceRecognizer {
     }
 }
 
-data class CapturedAudio(val pcm: ShortArray, val sampleRate: Int)
+data class CapturedAudio(
+    val pcm: ShortArray,
+    val sampleRate: Int,
+    /** Untrimmed capture, retained for offline VAD diagnostics. */
+    val rawPcm: ShortArray = pcm,
+    val speechDetected: Boolean = pcm.isNotEmpty(),
+)
 
 /** Captures one phrase with a short ring-buffer pre-roll so the first syllable survives startup. */
 class AudioCaptureSession(private val context: Context) {
     companion object {
         private const val TAG = "RfidVoice"
         const val SAMPLE_RATE = 16_000
-        // Once speech has actually started, this is the quiet tail needed to
-        // decide that the phrase is over. Silence before speech does not use
-        // this timer at all and keeps listening until the 10-second timeout.
-        private const val SILENCE_MS = 1_100L
-        private const val NOISE_REACTIVATION_MS = 250L
         private const val MAX_DURATION_MS = 10_000L
-        private const val SPEECH_START_BUFFERS = 3
-        private const val NOISE_ADAPTATION = .08
-        private const val PRE_ROLL_MS = 280L
-        private const val POST_ROLL_MS = 160L
-        // Some Huawei Android 9 builds deliver PCM at a fraction of the level
-        // seen on reference devices. Keep a small absolute floor, but make
-        // the actual decision relative to the continuously measured noise.
-        private const val MIN_SPEECH_RMS = 24.0
     }
 
     suspend fun capture(onReady: () -> Unit = {}): CapturedAudio? = withContext(Dispatchers.IO) {
@@ -84,18 +77,15 @@ class AudioCaptureSession(private val context: Context) {
             record.release()
             return@withContext null
         }
-        val buffer = ByteArray(minBuffer)
+        // Process short frames instead of waiting for a vendor-sized buffer.
+        // This keeps VAD decisions at ~20 ms even when AudioRecord's minimum
+        // buffer is much larger on a particular handset.
+        val frameBytes = AdaptiveVoiceActivityDetector(sampleRate = SAMPLE_RATE).frameSamples * 2
+        val buffer = ByteArray(minBuffer.coerceAtLeast(frameBytes))
         val output = ArrayList<Short>(SAMPLE_RATE * 4)
-        var speechStarted = false
-        var lastSpeechAt = 0L
-        var noiseRms = 0.0
-        var noiseSamples = 0
-        var consecutiveSpeechBuffers = 0
-        var speechStartSample = -1
-        var lastSpeechSample = -1
-        var quietSince = -1L
-        var requiringLoudConfirmation = false
-        var loudConfirmationBuffers = 0
+        val vad = AdaptiveVoiceActivityDetector(SAMPLE_RATE)
+        val pending = ArrayList<Short>(vad.frameSamples * 2)
+        var processedSamples = 0
         var readySent = false
         val startedAt = System.currentTimeMillis()
         try {
@@ -104,7 +94,8 @@ class AudioCaptureSession(private val context: Context) {
             var totalSamples = 0L
             var peakRms = 0.0
             var readErrors = 0
-            while (System.currentTimeMillis() - startedAt < MAX_DURATION_MS) {
+            var stopRequested = false
+            captureLoop@ while (System.currentTimeMillis() - startedAt < MAX_DURATION_MS) {
                 val count = record.read(buffer, 0, buffer.size)
                 if (count <= 0) {
                     readErrors++
@@ -119,92 +110,41 @@ class AudioCaptureSession(private val context: Context) {
                 val rms = rms(samples)
                 totalSamples += samples.size
                 if (rms > peakRms) peakRms = rms
-                // Keep the complete PCM stream. The Huawei microphone can be
-                // very quiet, so a hard VAD gate must not discard a valid
-                // phrase before Vosk/Whisper get a chance to decode it.
                 output.addAll(samples.asList())
-                // Establish a floor from the first samples, then keep it
-                // slowly tracking quiet environmental changes. This means a
-                // steady fan/room hum does not become speech just because it
-                // is louder than the level measured at startup.
-                if (noiseSamples == 0) {
-                    noiseRms = rms
-                    noiseSamples = 1
-                } else if (!speechStarted) {
-                    val candidateThreshold = maxOf(MIN_SPEECH_RMS, noiseRms * 1.9)
-                    if (rms <= candidateThreshold) {
-                        noiseRms = noiseRms * (1.0 - NOISE_ADAPTATION) + rms * NOISE_ADAPTATION
+                pending.addAll(samples.asList())
+                while (pending.size >= vad.frameSamples) {
+                    val frame = pending.subList(0, vad.frameSamples).toShortArray()
+                    pending.subList(0, vad.frameSamples).clear()
+                    val decision = vad.process(frame, processedSamples)
+                    processedSamples += frame.size
+                    if (!readySent) {
+                        readySent = true
+                        onReady()
+                        Log.d(TAG, "microphone ready noiseFloor=${"%.1f".format(java.util.Locale.US, decision.noiseFloorDbfs)} dBFS")
                     }
-                    noiseSamples++
-                } else if (rms < noiseRms * 1.2) {
-                    noiseRms = noiseRms * (1.0 - NOISE_ADAPTATION * .35) + rms * (NOISE_ADAPTATION * .35)
-                }
-                if (!readySent && noiseSamples >= 2) {
-                    readySent = true
-                    onReady()
-                    Log.d(TAG, "microphone ready noiseRms=${noiseRms.toInt()}")
-                }
-                // Do not start from one transient. Speech must stay above the
-                // current noise floor for several consecutive buffers. There
-                // is intentionally no fixed "start after N milliseconds"
-                // delay: a user can begin immediately, while silence keeps
-                // listening until the 10-second safety timeout.
-                val speechThreshold = maxOf(MIN_SPEECH_RMS, noiseRms * 2.0)
-                if (!speechStarted) {
-                    if (readySent && rms >= speechThreshold) {
-                        consecutiveSpeechBuffers++
-                        if (consecutiveSpeechBuffers >= SPEECH_START_BUFFERS) {
-                            speechStarted = true
-                            lastSpeechAt = now
-                            speechStartSample = (output.size - samples.size * SPEECH_START_BUFFERS).coerceAtLeast(0)
-                            lastSpeechSample = output.size
-                            quietSince = -1L
-                            requiringLoudConfirmation = false
-                            loudConfirmationBuffers = 0
-                            Log.d(TAG, "speech started sample=$speechStartSample rms=${rms.toInt()} threshold=${speechThreshold.toInt()}")
-                        }
-                    } else {
-                        consecutiveSpeechBuffers = 0
+                    if (decision.speechStarted && decision.state == "ACTIVE" && decision.speechStartSample >= 0) {
+                        Log.d(TAG, "speech active sample=${decision.speechStartSample} noise=${"%.1f".format(java.util.Locale.US, decision.noiseFloorDbfs)}dBFS start=${"%.1f".format(java.util.Locale.US, decision.startThresholdDbfs)}dBFS")
                     }
-                } else {
-                    if (rms >= speechThreshold) {
-                        val longQuiet = quietSince >= 0L && now - quietSince >= NOISE_REACTIVATION_MS
-                        if (requiringLoudConfirmation) {
-                            loudConfirmationBuffers++
-                            if (loudConfirmationBuffers >= 2) {
-                                lastSpeechAt = now
-                                lastSpeechSample = output.size
-                                requiringLoudConfirmation = false
-                                loudConfirmationBuffers = 0
-                            }
-                        } else if (longQuiet) {
-                            // A lone environmental click after a long pause
-                            // must not postpone transcription. Require two
-                            // consecutive loud buffers before resuming speech.
-                            requiringLoudConfirmation = true
-                            loudConfirmationBuffers = 1
-                        } else {
-                            lastSpeechAt = now
-                            lastSpeechSample = output.size
-                        }
-                        quietSince = -1L
-                    } else {
-                        if (quietSince < 0L) quietSince = now
-                        loudConfirmationBuffers = 0
-                        if (now - lastSpeechAt >= SILENCE_MS) break
+                    if (decision.ended) {
+                        stopRequested = true
+                        break
                     }
                 }
+                if (stopRequested) break@captureLoop
             }
-            Log.d(TAG, "capture finished samples=$totalSamples speech=$speechStarted peakRms=${peakRms.toInt()} readErrors=$readErrors")
-            if (!speechStarted || output.isEmpty()) null
-            else {
-                val preRollSamples = (SAMPLE_RATE * PRE_ROLL_MS / 1_000L).toInt()
-                val postRollSamples = (SAMPLE_RATE * POST_ROLL_MS / 1_000L).toInt()
-                val from = (speechStartSample - preRollSamples).coerceAtLeast(0)
-                val until = (lastSpeechSample + postRollSamples).coerceIn(from + 1, output.size)
+            val segment = vad.finish(output.size)
+            Log.d(TAG, "capture finished samples=$totalSamples speech=${segment.speechDetected} peakRms=${peakRms.toInt()} readErrors=$readErrors noiseFloor=${"%.1f".format(java.util.Locale.US, vad.noiseFloorDbfs())}dBFS")
+            if (output.isEmpty()) null
+            else if (!segment.speechDetected) {
+                // Keep silence/noise captures for diagnostics, but never send
+                // an empty segment to Whisper/Vosk (both can hallucinate text).
+                CapturedAudio(ShortArray(0), SAMPLE_RATE, output.toShortArray(), false)
+            } else {
+                val from = segment.startSample.coerceAtLeast(0)
+                val until = segment.endSample.coerceIn(from + 1, output.size)
                 val trimmed = output.subList(from, until).toShortArray()
-                Log.d(TAG, "captured speech window samples=${trimmed.size} from=$from until=$until")
-                CapturedAudio(normalizeAmplitude(trimmed), SAMPLE_RATE)
+                Log.d(TAG, "captured speech window samples=${trimmed.size} from=$from until=$until quietTail=${vad.finish(output.size).endSample - (segment.endSample - AdaptiveVoiceActivityDetector.POST_ROLL_MS * SAMPLE_RATE / 1_000L)}")
+                CapturedAudio(normalizeAmplitude(trimmed), SAMPLE_RATE, output.toShortArray(), true)
             }
         } finally {
             try { record.stop() } catch (_: Throwable) { }
@@ -242,7 +182,9 @@ class VoskVoiceRecognizer(private val context: Context) : PcmVoiceRecognizer {
 
     override suspend fun prepare(): Boolean = withContext(Dispatchers.IO) { modelOrNull() != null }
 
-    override suspend fun listen(onReady: () -> Unit): VoiceResult? = capture.capture(onReady)?.let { transcribe(it.pcm, it.sampleRate) }
+    override suspend fun listen(onReady: () -> Unit): VoiceResult? = capture.capture(onReady)
+        ?.takeIf { it.speechDetected && it.pcm.isNotEmpty() }
+        ?.let { transcribe(it.pcm, it.sampleRate) }
 
     override suspend fun transcribe(pcm: ShortArray, sampleRate: Int): VoiceResult? = withContext(Dispatchers.IO) {
         val model = modelOrNull() ?: return@withContext null
@@ -315,7 +257,9 @@ class WhisperVoiceRecognizer(private val context: Context, private val variant: 
         }
     }
 
-    override suspend fun listen(onReady: () -> Unit): VoiceResult? = capture.capture(onReady)?.let { transcribe(it.pcm, it.sampleRate) }
+    override suspend fun listen(onReady: () -> Unit): VoiceResult? = capture.capture(onReady)
+        ?.takeIf { it.speechDetected && it.pcm.isNotEmpty() }
+        ?.let { transcribe(it.pcm, it.sampleRate) }
 
     override suspend fun transcribe(pcm: ShortArray, sampleRate: Int): VoiceResult? = withContext(Dispatchers.Default) {
         if (!prepare() || handle == 0L) return@withContext null
@@ -344,7 +288,10 @@ class OfflineVoiceEngine(
     private val vosk: VoskVoiceRecognizer,
 ) {
     private val capture = AudioCaptureSession(context)
+    private val diagnostics = VoiceDiagnosticStore(File(context.filesDir, "voice-diagnostics"))
     var backend: VoiceBackend = VoiceBackend.WHISPER
+    var diagnosticsEnabled: Boolean = false
+    val diagnosticStore: VoiceDiagnosticStore get() = diagnostics
 
     suspend fun prepare(): Boolean {
         return when (backend) {
@@ -358,9 +305,25 @@ class OfflineVoiceEngine(
             Log.w("RfidVoice", "No speech audio captured")
             return null
         }
+        if (diagnosticsEnabled) {
+            runCatching { diagnostics.save(audio.rawPcm, audio.sampleRate) }
+                .onFailure { Log.w("RfidVoice", "Unable to save diagnostic WAV", it) }
+        }
+        if (!audio.speechDetected || audio.pcm.isEmpty()) {
+            Log.d("RfidVoice", "No speech detected; diagnostic capture retained without transcription")
+            return null
+        }
         onProcessing()
         Log.d("RfidVoice", "Transcribing ${audio.pcm.size} samples whisperAvailable=${whisper.isAvailable} voskAvailable=${vosk.isAvailable}")
         return when (backend) {
+            VoiceBackend.WHISPER -> whisper.transcribe(audio.pcm, audio.sampleRate)
+            VoiceBackend.VOSK -> vosk.transcribe(audio.pcm, audio.sampleRate)
+        }
+    }
+
+    suspend fun transcribeDiagnostic(file: File): VoiceResult? = withContext(Dispatchers.Default) {
+        val audio = runCatching { diagnostics.read(file) }.getOrNull() ?: return@withContext null
+        when (backend) {
             VoiceBackend.WHISPER -> whisper.transcribe(audio.pcm, audio.sampleRate)
             VoiceBackend.VOSK -> vosk.transcribe(audio.pcm, audio.sampleRate)
         }
