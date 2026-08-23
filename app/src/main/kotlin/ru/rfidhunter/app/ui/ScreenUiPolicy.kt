@@ -42,6 +42,13 @@ internal fun manualSearchDestination(item: ru.rfidhunter.app.domain.Item, reader
 internal fun shouldRetryReaderPreparation(state: AppState, readerReady: Boolean): Boolean =
     state is AppState.ReaderPreparation && !readerReady
 
+/** Continue setup after an unexpected disconnect even when the user is on Idle. */
+internal fun shouldContinueReaderSetup(
+    state: AppState,
+    readerReady: Boolean,
+    recoveringDisconnectedReader: Boolean,
+): Boolean = !readerReady && (state is AppState.ReaderPreparation || recoveringDisconnectedReader)
+
 /** Reader readiness advances only the preparation state for its selected item. */
 internal fun preparedSearchTarget(state: AppState, readerReady: Boolean): AppState.SearchTarget? =
     (state as? AppState.ReaderPreparation)
@@ -50,6 +57,10 @@ internal fun preparedSearchTarget(state: AppState, readerReady: Boolean): AppSta
 
 /** Inventory must never be requested from hardware before its reader is ready. */
 internal fun canStartInventory(readerReady: Boolean, isMock: Boolean): Boolean = readerReady || isMock
+
+/** These screens treat the physical trigger as a fresh contextual RFID check. */
+internal fun triggerStartsInitialCheck(state: AppState): Boolean =
+    state == AppState.Idle || state is AppState.Catalog || state is AppState.ItemCard
 
 /** Converts the normalized visual signal into the primary 0–100% scale. */
 internal fun normalizedSignalStrengthPercent(strength: Float): Int =

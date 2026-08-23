@@ -94,4 +94,32 @@ class AppStateTest {
         assertTrue(!shouldRetryReaderPreparation(AppState.Idle, readerReady = false))
         assertTrue(!canStartInventory(readerReady = false, isMock = false))
     }
+
+    @Test
+    fun unexpectedDisconnectKeepsReaderSetupRetryingFromIdle() {
+        assertTrue(
+            shouldContinueReaderSetup(
+                state = AppState.Idle,
+                readerReady = false,
+                recoveringDisconnectedReader = true,
+            ),
+        )
+        assertTrue(
+            !shouldContinueReaderSetup(
+                state = AppState.Idle,
+                readerReady = false,
+                recoveringDisconnectedReader = false,
+            ),
+        )
+    }
+
+    @Test
+    fun triggerOnItemCardStartsFreshContextualCheck() {
+        val item = Item(7, "Ключи", "EPC-7")
+
+        assertTrue(triggerStartsInitialCheck(AppState.ItemCard(item)))
+        assertTrue(triggerStartsInitialCheck(AppState.Idle))
+        assertTrue(triggerStartsInitialCheck(AppState.Catalog()))
+        assertTrue(!triggerStartsInitialCheck(AppState.SearchTarget(item)))
+    }
 }

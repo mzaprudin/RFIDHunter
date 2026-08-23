@@ -106,6 +106,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val recentReads: StateFlow<List<TagRead>> = _recentReads.asStateFlow()
     private var scanJob: Job? = null
     private var automaticSetupJob: Job? = null
+    private var readerHasBeenReady = false
+    private var recoveringDisconnectedReader = false
+    private var automaticRecoverySuppressed = false
 
     init {
         viewModelScope.launch { repository.seedIfEmpty() }
@@ -140,7 +143,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             readerReady.collect { ready ->
-                if (ready) completeReaderPreparation()
+                if (ready) {
+                    readerHasBeenReady = true
+                    recoveringDisconnectedReader = false
+                    automaticRecoverySuppressed = false
+                    completeReaderPreparation()
+                }
+            }
+        }
+        viewModelScope.launch {
+            connectionState.collect { connection ->
+                if (
+                    connection == ConnectionState.DISCONNECTED &&
+                    readerHasBeenReady &&
+                    !automaticRecoverySuppressed
+                ) {
+                    recoveringDisconnectedReader = true
+                    startAutomaticReaderSetup()
+                }
             }
         }
         viewModelScope.launch {
@@ -153,6 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectReader() = viewModelScope.launch {
         automaticSetupJob?.cancel()
+        automaticRecoverySuppressed = false
         markActivity()
         emitEvent("Подключаю считыватель")
         gateway.connect()
@@ -192,7 +213,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             markActivity()
             do {
                 val ready = automaticReaderSetupAttempt()
-                if (ready || !isReaderPreparationActive()) break
+                if (ready || !shouldContinueReaderSetup()) break
                 delay(READER_SETUP_RETRY_DELAY_MS)
             } while (isActive && !readerReady.value)
         }.also { job ->
@@ -254,8 +275,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
-    private fun isReaderPreparationActive(): Boolean =
-        shouldRetryReaderPreparation(_state.value, readerReady.value)
+    private fun shouldContinueReaderSetup(): Boolean = shouldContinueReaderSetup(
+        state = _state.value,
+        readerReady = readerReady.value,
+        recoveringDisconnectedReader = recoveringDisconnectedReader,
+    )
 
     private fun updateReaderPreparationStage(stage: ReaderPreparationStage) {
         val current = _state.value as? AppState.ReaderPreparation ?: return
@@ -271,11 +295,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun emitReaderSetupProgress(text: String) {
         // The preparation screen renders its own stage. Avoid speaking the
         // same status every retry, but keep startup feedback for the home UI.
-        if (!isReaderPreparationActive()) emitEvent(text)
+        if (!shouldContinueReaderSetup()) emitEvent(text)
     }
 
     private fun reportReaderSetupIssue(text: String) {
-        if (!isReaderPreparationActive()) emitEvent(text)
+        if (!shouldContinueReaderSetup()) emitEvent(text)
     }
 
     /** Backwards-compatible entry point used by the activity after permissions. */
@@ -283,16 +307,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryAutomaticReaderSetup() {
         automaticSetupJob?.cancel()
+        automaticRecoverySuppressed = false
         startAutomaticReaderSetup()
     }
 
     private fun cancelReaderPreparationAndGoIdle() {
-        automaticSetupJob?.cancel()
-        automaticSetupJob = null
+        if (!recoveringDisconnectedReader) {
+            automaticSetupJob?.cancel()
+            automaticSetupJob = null
+        }
         _state.value = AppState.Idle
     }
 
     fun disconnectReader() = viewModelScope.launch {
+        automaticRecoverySuppressed = true
+        recoveringDisconnectedReader = false
+        automaticSetupJob?.cancel()
         markActivity()
         gateway.disconnect()
     }
@@ -320,13 +350,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onTriggerPressed() {
         markActivity()
         triggerPressedAt = SystemClock.elapsedRealtime()
-        when (val current = _state.value) {
-            AppState.Idle, is AppState.Catalog -> startInitialCheck()
+        val current = _state.value
+        if (triggerStartsInitialCheck(current)) {
+            startInitialCheck()
+            return
+        }
+        when (current) {
             is AppState.SearchTarget -> startSearch(current.item)
             is AppState.RfidSearch -> Unit
             is AppState.SearchPaused -> scheduleSearchResume(current)
             is AppState.WaitForNewTag -> startNewTagCheck(current.name, current.photoPath, current.replacingItem)
-            is AppState.ItemCard -> emitEvent("Выберите действие на карточке")
             is AppState.VoiceListening -> listenVoice()
             AppState.Service -> startInitialCheck()
             else -> emitEvent("Сейчас курок не используется")

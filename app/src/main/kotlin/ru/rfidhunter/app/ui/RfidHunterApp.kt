@@ -468,6 +468,9 @@ private fun IdleScreen(
         "Удерживайте кнопку справа на IH25 до звукового сигнала.\n" +
         "Убедитесь, что слева мигает синяя лампочка.\n" +
         "Держите считыватель рядом с телефоном."
+    val disconnectedInstruction = "Считыватель отключён.\n\n" +
+        "Проверьте, что IH25 включён: удерживайте кнопку справа до звукового сигнала.\n" +
+        "Слева должна мигать синяя лампочка. Держите считыватель рядом с телефоном."
     Column(
         Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -503,13 +506,15 @@ private fun IdleScreen(
                     "Нажмите курок чтобы добавить метку или начать поиск"
                 } else if (scanState == ReaderScanState.SCANNING) {
                     scanningInstruction
+                } else if (connection == ConnectionState.DISCONNECTED && viewModel.fakeGateway == null) {
+                    disconnectedInstruction
                 } else {
                     readerStatus
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-                fontSize = if (showInstruction) 24.sp else if (scanState == ReaderScanState.SCANNING) 20.sp else 22.sp,
+                fontSize = if (showInstruction) 24.sp else if (scanState == ReaderScanState.SCANNING || connection == ConnectionState.DISCONNECTED) 20.sp else 22.sp,
                 fontWeight = FontWeight.Medium,
-                lineHeight = if (scanState == ReaderScanState.SCANNING) 27.sp else androidx.compose.ui.unit.TextUnit.Unspecified,
+                lineHeight = if (scanState == ReaderScanState.SCANNING || connection == ConnectionState.DISCONNECTED) 27.sp else androidx.compose.ui.unit.TextUnit.Unspecified,
                 textAlign = TextAlign.Center,
             )
             // Reserve the same space while connecting so the status does not

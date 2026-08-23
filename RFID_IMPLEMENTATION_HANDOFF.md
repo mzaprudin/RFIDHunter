@@ -28,6 +28,11 @@
    вещи голосом; отсутствие метки, слабый сигнал или неоднозначность запускают
    голосовой поиск вещи.
 
+На открытой `ItemCard` новое нажатие курка снова запускает эту цепочку с
+минимальной мощностью; сообщение «Выберите действие на карточке» для курка не
+используется. Это позволяет считать рядом другую известную или новую метку без
+предварительного возврата в `Idle`.
+
 См. [MainViewModel.kt, обработчики курка и initial check](app/src/main/kotlin/ru/rfidhunter/app/ui/MainViewModel.kt#L316-L448),
 [RfidDecisionEngine.kt](app/src/main/kotlin/ru/rfidhunter/app/domain/RfidDecisionEngine.kt)
 и [SearchInventoryPolicy](app/src/main/kotlin/ru/rfidhunter/app/domain/SearchPowerPolicy.kt).
@@ -71,8 +76,11 @@
   выбирается ровно один Honeywell/IH25 (или единственное найденное устройство).
   Тот же workflow используется экраном `ReaderPreparation`: при ручном выборе
   вещи без `readerReady` он повторяет поиск/подключение через 5 секунд, пока
-  пользователь не выйдет назад. Параллельный автоматический scan/connect не
-  создаётся. Холодный `createReader()` может занимать до 30 секунд.
+  пользователь не выйдет назад. После неожиданного разрыва уже готового IH25
+  workflow также продолжает retry из `Idle`, пока `readerReady` снова не станет
+  `true`; явное отключение в сервисе это восстановление подавляет. Параллельный
+  автоматический scan/connect не создаётся. Холодный `createReader()` может
+  занимать до 30 секунд.
 - MAC сохраняется в `SharedPreferences` ключом `reader_mac` через
   [HoneywellRfidGateway.readerAddress](app/src/hardware/kotlin/ru/rfidhunter/app/hardware/HoneywellRfidGateway.kt#L65-L69).
 - BLE scan и фильтрация имени (`Honeywell`, `IH25`, `IH...`) находятся в
