@@ -15,7 +15,7 @@ WIDTH, HEIGHT = 480, 320
 FRAME_COUNT = 32
 FRAME_DURATION_MS = 50
 
-BACKGROUND = "#F7F4EC"
+BACKGROUND = "#F7F7F2"
 OUTLINE = "#17324D"
 WAVE = "#52B9AD"
 TRIGGER = "#F18A5B"
@@ -137,16 +137,68 @@ def draw_frame(progress: float, time: float) -> Image.Image:
     return image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
 
 
+def encode_frames(frames: list[Image.Image]) -> list[Image.Image]:
+    """Use one deterministic palette while preserving visually equal frames.
+
+    Pillow normally merges consecutive equal frames and adds their durations.
+    The two final palette entries intentionally contain the same background
+    colour; alternating one background pixel keeps all 32 GIF frames distinct
+    without changing a single decoded RGB pixel.
+    """
+    atlas = Image.new("RGB", (WIDTH, HEIGHT * len(frames)), BACKGROUND)
+    for index, frame in enumerate(frames):
+        atlas.paste(frame, (0, HEIGHT * index))
+
+    palette_source = atlas.quantize(
+        colors=254,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    )
+    palette = palette_source.getpalette()
+    background_rgb = tuple(int(BACKGROUND[offset:offset + 2], 16) for offset in (1, 3, 5))
+    for palette_index in (254, 255):
+        offset = palette_index * 3
+        palette[offset:offset + 3] = list(background_rgb)
+    palette_source.putpalette(palette)
+
+    encoded = []
+    for index, frame in enumerate(frames):
+        paletted = frame.quantize(palette=palette_source, dither=Image.Dither.NONE)
+        paletted.putpalette(palette)
+        frame_bytes = frame.tobytes()
+        red, green, blue = background_rgb
+        background_mask = Image.frombytes(
+            "L",
+            frame.size,
+            bytes(
+                255
+                if frame_bytes[offset] == red
+                and frame_bytes[offset + 1] == green
+                and frame_bytes[offset + 2] == blue
+                else 0
+                for offset in range(0, len(frame_bytes), 3)
+            ),
+        )
+        paletted.paste(254, mask=background_mask)
+        paletted.putpixel((0, 0), 254 + index % 2)
+        encoded.append(paletted)
+    return encoded
+
+
 def main() -> None:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    frames = [draw_frame(press_progress(index / FRAME_COUNT), index / FRAME_COUNT) for index in range(FRAME_COUNT)]
+    frames = encode_frames([
+        draw_frame(press_progress(index / FRAME_COUNT), index / FRAME_COUNT)
+        for index in range(FRAME_COUNT)
+    ])
     frames[0].save(
         OUTPUT,
         save_all=True,
         append_images=frames[1:],
         duration=FRAME_DURATION_MS,
         loop=0,
-        optimize=True,
+        optimize=False,
+        disposal=1,
     )
     print(f"Wrote {OUTPUT} ({OUTPUT.stat().st_size} bytes)")
 

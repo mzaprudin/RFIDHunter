@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import ru.rfidhunter.app.hardware.RfidForegroundService
 
 /**
  * Lock-screen trampoline for a physical IH25 trigger.
@@ -20,6 +21,13 @@ class TriggerWakeActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The service normally removes the banner immediately after sending
+        // this intent. Ask it to clean up here as well for a launch that races
+        // with process/service lifecycle changes.
+        startService(
+            Intent(this, RfidForegroundService::class.java)
+                .setAction(RfidForegroundService.ACTION_REMOVE_TRIGGER_OVERLAY),
+        )
         intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0)
             .takeIf { it != 0 }
             ?.let { getSystemService(NotificationManager::class.java).cancel(it) }

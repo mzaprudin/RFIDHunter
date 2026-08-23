@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -25,6 +27,7 @@ class MainActivity : ComponentActivity() {
     private var activeViewModel: MainViewModel? = null
     private var cameraGranted by mutableStateOf(false)
     private var microphoneGranted by mutableStateOf(false)
+    private var triggerOverlayAvailable by mutableStateOf(true)
     private var bluetoothPermissionRequested = false
     private var notificationPermissionRequested = false
     private var readerServiceStarted = false
@@ -61,8 +64,10 @@ class MainActivity : ComponentActivity() {
                 viewModel = vm,
                 cameraPermission = cameraGranted,
                 microphonePermission = microphoneGranted,
+                triggerOverlayAvailable = triggerOverlayAvailable,
                 requestCameraPermission = { requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA) },
                 requestMicrophonePermission = { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) },
+                requestTriggerOverlayPermission = ::requestTriggerOverlayPermission,
             )
         }
     }
@@ -170,6 +175,19 @@ class MainActivity : ComponentActivity() {
     private fun refreshPermissions() {
         cameraGranted = hasPermission(Manifest.permission.CAMERA)
         microphoneGranted = hasPermission(Manifest.permission.RECORD_AUDIO)
+        triggerOverlayAvailable = BuildConfig.FLAVOR != "hardware" ||
+            Build.VERSION.SDK_INT < ANDROID_16_API_LEVEL ||
+            Settings.canDrawOverlays(this)
+    }
+
+    private fun requestTriggerOverlayPermission() {
+        if (BuildConfig.FLAVOR != "hardware" || Build.VERSION.SDK_INT < ANDROID_16_API_LEVEL) return
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName"),
+            ),
+        )
     }
 
     /** Android 12+ requires runtime Bluetooth permission before a connected-device FGS can start. */
@@ -234,5 +252,6 @@ class MainActivity : ComponentActivity() {
         private const val REQUEST_BLUETOOTH = 12
         private const val REQUEST_LOCATION = 13
         private const val REQUEST_NOTIFICATIONS = 14
+        private const val ANDROID_16_API_LEVEL = 36
     }
 }

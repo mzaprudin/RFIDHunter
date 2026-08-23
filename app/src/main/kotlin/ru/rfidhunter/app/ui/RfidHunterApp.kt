@@ -58,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton as MaterialTextButton
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -66,6 +67,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +77,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
@@ -84,7 +87,11 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -111,8 +118,10 @@ fun RfidHunterApp(
     viewModel: MainViewModel,
     cameraPermission: Boolean,
     microphonePermission: Boolean,
+    triggerOverlayAvailable: Boolean,
     requestCameraPermission: () -> Unit,
     requestMicrophonePermission: () -> Unit,
+    requestTriggerOverlayPermission: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val items by viewModel.items.collectAsState()
@@ -126,6 +135,8 @@ fun RfidHunterApp(
     var announcement by remember { mutableStateOf("") }
     var announcementKey by remember { mutableStateOf("") }
     val screenKey = feedbackKey(state)
+    val currentTouchGateKey = touchGateKey(state)
+    var screenTouchEnabled by remember(currentTouchGateKey) { mutableStateOf(false) }
     val latestScreenKey by rememberUpdatedState(screenKey)
     val context = LocalContext.current
     val promptPlayer = remember(context) { OfflinePromptPlayer(context) }
@@ -145,6 +156,10 @@ fun RfidHunterApp(
             announcementKey = screenKey
         }
     }
+    LaunchedEffect(currentTouchGateKey) {
+        delay(TOUCH_GATE_DELAY_MS)
+        screenTouchEnabled = true
+    }
 
     val voiceState = state as? AppState.VoiceListening
     LaunchedEffect(
@@ -163,50 +178,79 @@ fun RfidHunterApp(
     }
 
     val roomyTypography = remember { Typography().withRoomyLineHeight() }
-    MaterialTheme(typography = roomyTypography) {
-        Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
-            Column(Modifier.fillMaxSize()) {
+    CompositionLocalProvider(LocalScreenTouchEnabled provides screenTouchEnabled) {
+        MaterialTheme(typography = roomyTypography) {
+            Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
+            Column(Modifier.fillMaxSize().systemBarsPadding()) {
                 // Idle has one central status slot of its own. Keeping the
                 // event banner there would duplicate connection text and push
                 // the trigger hint down as the reader changes state.
                 val hideAnnouncement =
-                    state == AppState.Idle ||
+                        state == AppState.Idle ||
+                        state is AppState.ReaderPreparation ||
                         state is AppState.SearchTarget ||
                         state is AppState.RfidSearch ||
-                        state is AppState.SearchPaused
+                        state is AppState.SearchPaused ||
+                        (state is AppState.VoiceListening && announcement in VOICE_INLINE_STATUSES)
                 if (announcement.isNotBlank() && !hideAnnouncement) {
                     Text(announcement, modifier = Modifier.fillMaxWidth().background(Color(0xFFE8F5E9)).padding(16.dp), fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
                 }
                 Box(Modifier.weight(1f)) {
-                    when (val current = state) {
-                        AppState.Idle -> IdleScreen(viewModel, connection, readerScanState, readerReady, readerDiagnostic, items)
-                        AppState.InitialChecking -> StatusScreen("Проверяю метку…")
-                        is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem), voiceBackend, viewModel::openCatalog)
-                        is AppState.Camera -> CameraScreen(current, viewModel, cameraPermission, requestCameraPermission)
-                        is AppState.PhotoReview -> PhotoReviewScreen(current, viewModel::redoPhoto, viewModel::acceptPhoto)
-                        is AppState.WaitForNewTag -> WaitForTagScreen(current, viewModel)
-                        is AppState.VoiceListening -> VoiceListeningScreen(current, voiceBackend, viewModel::openCatalog)
-                        is AppState.VoiceConfirmation -> VoiceConfirmationScreen(current, viewModel)
-                        AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
-                        is AppState.SearchTarget -> SearchTargetScreen(current)
-                        is AppState.RfidSearch -> SearchProgressScreen(current)
-                        is AppState.SearchPaused -> SearchPausedScreen(current, viewModel)
-                        is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
-                        is AppState.Catalog -> CatalogScreen(current, items, viewModel)
-                        is AppState.MultipleTags -> MessageScreen(current.message, viewModel::openCatalog)
-                        is AppState.Message -> ConfirmScreen(
-                            text = current.text,
-                            highlightedTitle = current.highlightedTitle,
-                            onConfirm = { viewModel.confirmMessage(true) },
-                            onCancel = { viewModel.confirmMessage(false) },
-                        )
-                        AppState.Service -> ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads)
-                        is AppState.Error -> MessageScreen(current.text, viewModel::closeService)
+                    if (state is AppState.Service) {
+                        ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads)
+                    } else {
+                        UserScreen {
+                            when (val current = state) {
+                                AppState.Idle -> IdleScreen(
+                                    viewModel,
+                                    connection,
+                                    readerScanState,
+                                    readerReady,
+                                    readerDiagnostic,
+                                    items,
+                                    triggerOverlayAvailable,
+                                    requestTriggerOverlayPermission,
+                                )
+                                AppState.InitialChecking -> StatusScreen("Проверяю метку…")
+                                is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem), voiceBackend, viewModel::openCatalog)
+                                is AppState.Camera -> CameraScreen(current, viewModel, cameraPermission, requestCameraPermission)
+                                is AppState.PhotoReview -> PhotoReviewScreen(current, viewModel::redoPhoto, viewModel::acceptPhoto)
+                                is AppState.WaitForNewTag -> WaitForTagScreen(current, viewModel)
+                                is AppState.AddSuccess -> AddSuccessScreen(current)
+                                is AppState.VoiceListening -> VoiceListeningScreen(current, voiceBackend, viewModel::openCatalog)
+                                is AppState.VoiceConfirmation -> VoiceConfirmationScreen(current, viewModel)
+                                AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
+                                is AppState.ReaderPreparation -> ReaderPreparationScreen(current)
+                                is AppState.SearchTarget -> SearchTargetScreen(current, readerReady || viewModel.fakeGateway != null)
+                                is AppState.RfidSearch -> SearchProgressScreen(current, readerReady || viewModel.fakeGateway != null)
+                                is AppState.SearchPaused -> SearchPausedScreen(current, readerReady || viewModel.fakeGateway != null, viewModel)
+                                is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
+                                is AppState.Catalog -> CatalogScreen(current, items, viewModel)
+                                is AppState.MultipleTags -> MessageScreen(current.message, viewModel::openCatalog)
+                                is AppState.Message -> ConfirmScreen(
+                                    text = current.text,
+                                    highlightedTitle = current.highlightedTitle,
+                                    onConfirm = { viewModel.confirmMessage(true) },
+                                    onCancel = { viewModel.confirmMessage(false) },
+                                )
+                                AppState.Service -> Unit
+                                is AppState.Error -> MessageScreen(current.text, viewModel::closeService)
+                            }
+                        }
                     }
                 }
             }
+            }
         }
     }
+}
+
+private val LocalScreenTouchEnabled = staticCompositionLocalOf { true }
+
+/** Shared safe-area and spacing contract for every ordinary user flow. */
+@Composable
+private fun UserScreen(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) { content() }
 }
 
 /**
@@ -220,13 +264,16 @@ private fun Button(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     colors: ButtonColors = ButtonDefaults.buttonColors(),
+    shape: Shape = RoundedCornerShape(50),
     content: @Composable RowScope.() -> Unit,
 ) {
+    val screenTouchEnabled = LocalScreenTouchEnabled.current
     MaterialButton(
         onClick = {},
-        modifier = modifier.resilientButtonInput(onClick, enabled),
+        modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
         colors = colors,
+        shape = shape,
         content = content,
     )
 }
@@ -236,12 +283,15 @@ private fun OutlinedButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    shape: Shape = RoundedCornerShape(50),
     content: @Composable RowScope.() -> Unit,
 ) {
+    val screenTouchEnabled = LocalScreenTouchEnabled.current
     MaterialOutlinedButton(
         onClick = {},
-        modifier = modifier.resilientButtonInput(onClick, enabled),
+        modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
+        shape = shape,
         content = content,
     )
 }
@@ -253,16 +303,21 @@ private fun TextButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val screenTouchEnabled = LocalScreenTouchEnabled.current
     MaterialTextButton(
         onClick = {},
-        modifier = modifier.resilientButtonInput(onClick, enabled),
+        modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
         content = content,
     )
 }
 
-private fun Modifier.resilientButtonInput(onClick: () -> Unit, enabled: Boolean): Modifier =
-    pointerInput(enabled) {
+private fun Modifier.resilientButtonInput(
+    onClick: () -> Unit,
+    enabled: Boolean,
+    screenTouchEnabled: Boolean,
+): Modifier =
+    pointerInput(enabled, screenTouchEnabled, onClick) {
         awaitPointerEventScope {
             var lastActionAt = 0L
             while (true) {
@@ -282,7 +337,7 @@ private fun Modifier.resilientButtonInput(onClick: () -> Unit, enabled: Boolean)
                     if (primary?.pressed == false || primary == null) break
                 }
                 val now = System.currentTimeMillis()
-                if (enabled && !multiTouch && now - lastActionAt >= 500L) {
+                if (enabled && screenTouchEnabled && !multiTouch && now - lastActionAt >= 500L) {
                     lastActionAt = now
                     onClick()
                 }
@@ -291,10 +346,45 @@ private fun Modifier.resilientButtonInput(onClick: () -> Unit, enabled: Boolean)
     }.semantics {
         onClick {
             if (!enabled) return@onClick false
-            onClick()
+            if (screenTouchEnabled) onClick()
             true
         }
     }
+
+/**
+ * Lets LazyColumn keep its normal drag gesture. A touch opens a card only if
+ * it ends without travelling past the system touch-slop threshold.
+ */
+private fun Modifier.catalogCardTapInput(
+    onClick: () -> Unit,
+    screenTouchEnabled: Boolean,
+): Modifier = pointerInput(onClick, screenTouchEnabled) {
+    awaitPointerEventScope {
+        var lastActionAt = 0L
+        while (true) {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var moved = false
+            var multiTouch = false
+            while (true) {
+                val event = awaitPointerEvent()
+                event.changes.filter { it.id != down.id && it.pressed }.forEach { multiTouch = true }
+                val primary = event.changes.firstOrNull { it.id == down.id }
+                if (primary != null && (primary.position - down.position).getDistance() > viewConfiguration.touchSlop) moved = true
+                if (primary?.pressed == false || primary == null) break
+            }
+            val now = System.currentTimeMillis()
+            if (screenTouchEnabled && !moved && !multiTouch && now - lastActionAt >= 500L) {
+                lastActionAt = now
+                onClick()
+            }
+        }
+    }
+}.semantics {
+    onClick {
+        if (screenTouchEnabled) onClick()
+        true
+    }
+}
 
 private fun Typography.withRoomyLineHeight(): Typography = copy(
     displayLarge = displayLarge.copy(lineHeight = 1.28.em),
@@ -314,12 +404,35 @@ private fun Typography.withRoomyLineHeight(): Typography = copy(
     labelSmall = labelSmall.copy(lineHeight = 1.28.em),
 )
 
+/** The one visual treatment for a user-facing item name. */
+@Composable
+private fun ThingName(
+    name: String,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    fontSize: androidx.compose.ui.unit.TextUnit = 30.sp,
+    color: Color = Color(0xFF1565C0),
+    textAlign: TextAlign = TextAlign.Center,
+) {
+    Text(
+        buildAnnotatedString {
+            append("Вещь: ")
+            pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = color))
+            append(name)
+            pop()
+        },
+        modifier = modifier,
+        fontSize = fontSize,
+        textAlign = textAlign,
+    )
+}
+
 private fun feedbackKey(state: AppState): String = when (state) {
     AppState.Idle -> "idle"
     AppState.Service -> "service"
     AppState.InitialChecking -> "initial"
     is AppState.Catalog -> "catalog"
     is AppState.ItemCard -> "card-${state.item.id}"
+    is AppState.ReaderPreparation -> "reader-preparation-${state.item.id}"
     is AppState.SearchTarget -> "target-${state.item.id}"
     is AppState.RfidSearch -> "search-${state.item.id}"
     is AppState.SearchPaused -> "paused-${state.item.id}"
@@ -329,6 +442,7 @@ private fun feedbackKey(state: AppState): String = when (state) {
     is AppState.Camera -> "camera-${state.context}"
     is AppState.PhotoReview -> "photo-review"
     is AppState.WaitForNewTag -> "wait-tag"
+    is AppState.AddSuccess -> "add-success-${state.name}"
     is AppState.MultipleTags -> "multiple"
     is AppState.Message -> "message-${state.highlightedTitle ?: state.text}"
     is AppState.Error -> "error"
@@ -343,16 +457,19 @@ private fun IdleScreen(
     readerReady: Boolean,
     diagnostic: String?,
     items: List<Item>,
+    triggerOverlayAvailable: Boolean,
+    requestTriggerOverlayPermission: () -> Unit,
 ) {
     val connectionInProgress = connection == ConnectionState.CONNECTING ||
         scanState == ReaderScanState.SCANNING ||
         (connection == ConnectionState.CONNECTED && !readerReady)
     val showInstruction = !connectionInProgress && (readerReady || viewModel.fakeGateway != null)
+    val scanningInstruction = "Ищу считыватель рядом…\n\n" +
+        "Удерживайте кнопку справа на IH25 до звукового сигнала.\n" +
+        "Убедитесь, что слева мигает синяя лампочка.\n" +
+        "Держите считыватель рядом с телефоном."
     Column(
-        Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 20.dp),
+        Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -384,12 +501,15 @@ private fun IdleScreen(
             Text(
                 if (showInstruction) {
                     "Нажмите курок чтобы добавить метку или начать поиск"
+                } else if (scanState == ReaderScanState.SCANNING) {
+                    scanningInstruction
                 } else {
                     readerStatus
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-                fontSize = if (showInstruction) 24.sp else 22.sp,
+                fontSize = if (showInstruction) 24.sp else if (scanState == ReaderScanState.SCANNING) 20.sp else 22.sp,
                 fontWeight = FontWeight.Medium,
+                lineHeight = if (scanState == ReaderScanState.SCANNING) 27.sp else androidx.compose.ui.unit.TextUnit.Unspecified,
                 textAlign = TextAlign.Center,
             )
             // Reserve the same space while connecting so the status does not
@@ -409,6 +529,14 @@ private fun IdleScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            if (!triggerOverlayAvailable) {
+                OutlinedButton(
+                    requestTriggerOverlayPermission,
+                    Modifier.fillMaxWidth().height(72.dp),
+                ) {
+                    Text("РАЗРЕШИТЬ ЗАПУСК ПО КУРКУ", fontSize = 18.sp)
+                }
+            }
             if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(88.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
             Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(88.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
             OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(88.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
@@ -421,27 +549,30 @@ private fun IdleScreen(
 
 @Composable
 private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceBackend, onOpenCatalog: () -> Unit) {
-    val isNewTag = state.mode == VoiceInputMode.ADD &&
-        state.pendingEpc != null &&
-        state.renameItem == null
+    val isNewItem = state.mode == VoiceInputMode.ADD && state.renameItem == null
     val prompt = state.instruction
         ?: when {
-            isNewTag -> "Метка считана, но её ещё нет в каталоге"
+            isNewItem -> "Скажите, как ее назвать?"
+            state.renameItem != null -> "Скажите новое название"
             state.mode == VoiceInputMode.SEARCH -> "Скажите, что найти?"
-            else -> "Скажите, как назвать вещь?"
+            else -> "Скажите, как ее назвать?"
         }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         if (!state.isProcessing) {
-            if (isNewTag) {
+            if (isNewItem) {
                 Text("Добавляем новую вещь", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(12.dp))
-                Text(prompt, fontSize = 28.sp, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(12.dp))
                 Text("Скажите, как ее назвать?", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            } else if (state.renameItem != null) {
+                Text("Изменяем название", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(12.dp))
+                ThingName(state.renameItem.name, fontSize = 30.sp)
+                Spacer(Modifier.height(12.dp))
+                Text(prompt, fontSize = 28.sp, textAlign = TextAlign.Center)
             } else if (state.missingSearchQuery != null) {
                 Text("В каталоге отсутствует", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(10.dp))
@@ -508,21 +639,33 @@ private fun AnimatedMicrophone() {
 
 @Composable
 private fun VoiceConfirmationScreen(state: AppState.VoiceConfirmation, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().resilientReviewInput(viewModel::editVoiceConfirmation, viewModel::acceptVoiceConfirmation)) {
-        ReviewZone("ИЗМЕНИТЬ", Color(0xFFFFE0B2), Modifier.weight(.22f))
-        Box(Modifier.fillMaxWidth().weight(.56f).background(Color.White), Alignment.Center) {
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) {
             if (state.suggestedItem != null) {
-                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Я услышал:", fontSize = 25.sp, textAlign = TextAlign.Center)
                     Text("«${state.text}»", fontSize = 30.sp, color = Color(0xFF616161), textAlign = TextAlign.Center)
                     Text("Вероятно, вы имели в виду:", fontSize = 25.sp, textAlign = TextAlign.Center)
-                    Text("«${state.suggestedItem.name}»", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+                    ThingName(state.suggestedItem.name, fontSize = 36.sp)
                 }
             } else {
-                Text(state.text, modifier = Modifier.fillMaxWidth().padding(24.dp), fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+                ThingName(state.text, fontSize = 40.sp)
             }
         }
-        ReviewZone(if (state.suggestedItem != null) "ДА — ИСКАТЬ" else "ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(.22f))
+        Button(
+            viewModel::editVoiceConfirmation,
+            Modifier.fillMaxWidth().height(82.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB74D), contentColor = Color(0xFF3E2723)),
+        ) { Text("ИЗМЕНИТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
+        Button(
+            viewModel::acceptVoiceConfirmation,
+            Modifier.fillMaxWidth().height(82.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A), contentColor = Color.White),
+        ) { Text(if (state.suggestedItem != null) "ДА — ИСКАТЬ" else "ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
     }
 }
 
@@ -556,15 +699,37 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
         }
     }
     if (!permission) {
-        Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text(state.name ?: state.item?.name ?: "Фотография вещи", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            state.name?.let { ThingName(it, fontSize = 30.sp) }
+                ?: state.item?.let { ThingName(it.name, fontSize = 30.sp) }
+                ?: Text("Фотография вещи", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp)); Text("Нужен доступ к камере", fontSize = 28.sp, textAlign = TextAlign.Center)
             Button(requestPermission, Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
         }
     } else Box(Modifier.fillMaxSize()) {
         AndroidView({ PreviewView(it).apply { this.controller = controller } }, Modifier.fillMaxSize())
-        Text("Нажмите Volume+ или Volume− для фото", modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(.65f)).padding(18.dp), color = Color.White, fontSize = 20.sp, textAlign = TextAlign.Center)
-        Text(state.name ?: state.item?.name ?: "Фотография вещи", modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(.72f)).padding(16.dp), color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(
+            buildAnnotatedString {
+                append("Нажмите ")
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF81D4FA)))
+                append("Громкость+")
+                pop()
+                append(" или ")
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF81D4FA)))
+                append("Громкость−")
+                pop()
+                append(" для фото")
+            },
+            modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(.65f)).padding(18.dp),
+            color = Color.White,
+            fontSize = 20.sp,
+            textAlign = TextAlign.Center,
+        )
+        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.White.copy(.92f)).padding(12.dp), Alignment.Center) {
+            state.name?.let { ThingName(it, fontSize = 28.sp) }
+                ?: state.item?.let { ThingName(it.name, fontSize = 28.sp) }
+                ?: Text("Фотография вещи", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        }
         if (processingPhoto) Box(Modifier.fillMaxSize().background(Color.Black.copy(.48f)), Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) { CircularProgressIndicator(color = Color.White, strokeWidth = 6.dp, modifier = Modifier.size(64.dp)); Text("Обрабатываю фото…", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold) } }
     }
 }
@@ -572,77 +737,112 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
 @Composable
 private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, onDone: () -> Unit) {
     val bitmap = remember(state.path) { BitmapFactory.decodeFile(state.path)?.asImageBitmap() }
-    Column(Modifier.fillMaxSize().resilientReviewInput(onRedo, onDone)) {
-        ReviewZone("ПЕРЕДЕЛАТЬ", Color(0xFFFFE0B2), Modifier.weight(.22f))
-        Box(Modifier.fillMaxWidth().weight(.56f).padding(vertical = 12.dp).background(Color(0xFF202020)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", color = Color.White, fontSize = 24.sp) }
-        ReviewZone("ГОТОВО!", Color(0xFFC8E6C9), Modifier.weight(.22f))
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        val thingName = state.name ?: state.item?.name
+        if (thingName != null) ThingName(thingName, fontSize = 26.sp)
+        Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF202020)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", color = Color.White, fontSize = 24.sp) }
+        Button(onRedo, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB74D), contentColor = Color(0xFF3E2723))) { Text("ПЕРЕДЕЛАТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
+        Button(onDone, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A), contentColor = Color.White)) { Text("ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
     }
 }
 
-private fun Modifier.resilientReviewInput(onRedo: () -> Unit, onDone: () -> Unit): Modifier = pointerInput(Unit) {
-    awaitPointerEventScope {
-            var lastActionAt = 0L
-            while (true) {
-                val down = awaitFirstDown(false)
-                val action = when { down.position.y < size.height * .28f -> onRedo; down.position.y > size.height * .72f -> onDone; else -> null }
-                var multiTouch = false
-                while (true) {
-                    val event = awaitPointerEvent()
-                    event.changes
-                        .filter { it.id != down.id && it.pressed }
-                        .forEach {
-                            multiTouch = true
-                            it.consume()
-                        }
-                    val pointer = event.changes.firstOrNull { it.id == down.id }
-                    pointer?.consume()
-                    if (pointer?.pressed == false || pointer == null) break
-                }
-                val now = System.currentTimeMillis()
-                if (action != null && !multiTouch && now - lastActionAt >= 500) { lastActionAt = now; action() }
-            }
-        }
-    }
-
-@Composable private fun ReviewZone(label: String, color: Color, modifier: Modifier) = Box(modifier.fillMaxWidth().background(color), Alignment.Center) { Text(label, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
-
 @Composable
 private fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("Поднесите одну новую метку", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        Text("Вещь: ${state.name}", fontSize = 24.sp, color = Color(0xFF1565C0))
+    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        when (val reason = state.reason) {
+            NewTagWaitReason.Initial -> Text("Поднесите одну новую метку", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            NewTagWaitReason.NoTag -> Text("Новая метка не считалась. Поднесите одну метку и нажмите курок", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            NewTagWaitReason.MultipleTags -> Text("Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            is NewTagWaitReason.AlreadyAssigned -> {
+                Text("Эта метка уже привязана к другой вещи. Считайте другую метку", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(16.dp))
+                ThingName(reason.item.name, fontSize = 30.sp)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        ThingName(state.name, fontSize = 24.sp)
         if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(64.dp)) { Text("ДЕМО: СЧИТАТЬ МЕТКУ", fontSize = 19.sp) }
     }
 }
 
 @Composable
-private fun SearchTargetScreen(state: AppState.SearchTarget) {
+private fun AddSuccessScreen(state: AppState.AddSuccess) {
+    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("Вещь добавлена", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(18.dp))
+        ThingName(state.name, fontSize = 32.sp)
+    }
+}
+
+@Composable
+private fun ReaderPreparationScreen(state: AppState.ReaderPreparation) {
+    val stage = when (state.stage) {
+        ReaderPreparationStage.SEARCHING -> "Ищу считыватель рядом…"
+        ReaderPreparationStage.CONNECTING -> "Подключаюсь к IH25…"
+        ReaderPreparationStage.PREPARING -> "Готовлю считыватель…"
+    }
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text("Подготавливаю считыватель", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(16.dp))
+        ThingName(state.item.name, fontSize = 30.sp)
+        Spacer(Modifier.height(28.dp))
+        CircularProgressIndicator(modifier = Modifier.size(52.dp), strokeWidth = 5.dp)
+        Spacer(Modifier.height(20.dp))
+        Text(stage, fontSize = 24.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(28.dp))
+        Text(
+            "Удерживайте кнопку справа на IH25 до звукового сигнала.\n" +
+                "Убедитесь, что слева мигает синяя лампочка.\n" +
+                "Держите считыватель рядом с телефоном.",
+            modifier = Modifier.fillMaxWidth(),
+            fontSize = 21.sp,
+            lineHeight = 28.sp,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun SearchTargetScreen(state: AppState.SearchTarget, readerReady: Boolean) {
     SearchScreen(
         item = state.item,
-        signalStrength = 0f,
-        signalText = "Готов к поиску",
-        instruction = "Нажмите и удерживайте курок",
+        rssi = null,
+        instruction = if (readerReady) "Удерживайте курок, чтобы начать поиск" else "Считыватель отключён",
     )
 }
 
 @Composable
-private fun SearchProgressScreen(state: AppState.RfidSearch) {
-    GeigerClickFeedback(state.signalStrength)
+private fun SearchProgressScreen(state: AppState.RfidSearch, readerReady: Boolean) {
+    if (readerReady) GeigerClickFeedback(state.signalStrength)
     SearchScreen(
         item = state.item,
-        signalStrength = state.signalStrength,
-        signalText = signalDescription(state.signalStrength),
-        instruction = "Перемещайте считыватель. Щелчки участятся рядом с вещью",
+        rssi = state.rssi,
+        instruction = if (readerReady) {
+            "Перемещайте считыватель. Щелчки участятся рядом с вещью"
+        } else {
+            "Считыватель отключён"
+        },
     )
 }
 
 @Composable
-private fun SearchPausedScreen(state: AppState.SearchPaused, viewModel: MainViewModel) {
+private fun SearchPausedScreen(state: AppState.SearchPaused, readerReady: Boolean, viewModel: MainViewModel) {
     SearchScreen(
         item = state.item,
-        signalStrength = state.signalStrength,
-        signalText = if (state.lastDetection) signalDescription(state.signalStrength) else "Сигнал пока не найден",
-        instruction = "Нажмите и продолжайте держать курок. Через секунду поиск возобновится",
+        rssi = state.lastRssi,
+        instruction = if (readerReady) {
+            "Нажмите и продолжайте держать курок. Через секунду поиск возобновится"
+        } else {
+            "Считыватель отключён"
+        },
         onFinish = viewModel::finishSearch,
     )
 }
@@ -650,34 +850,109 @@ private fun SearchPausedScreen(state: AppState.SearchPaused, viewModel: MainView
 @Composable
 private fun SearchScreen(
     item: Item,
-    signalStrength: Float,
-    signalText: String,
+    rssi: Int?,
     instruction: String,
     onFinish: (() -> Unit)? = null,
 ) {
+    val signalPolicy = remember { SearchSignalPolicy() }
+    val targetVisualStrength = signalPolicy.normalizedStrength(rssi)
+    val animatedVisualStrength by animateFloatAsState(
+        targetValue = targetVisualStrength,
+        animationSpec = tween(durationMillis = 340),
+        label = "RFID signal display",
+    )
     Column(
-        Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 20.dp, vertical = 14.dp),
+        Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Ищем", modifier = Modifier.fillMaxWidth(), fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        Text(item.name, modifier = Modifier.fillMaxWidth(), fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
-        SearchItemPhoto(item)
-        AnalogSignalMeter(
-            signalStrength,
-            Modifier.fillMaxWidth().weight(1f).heightIn(min = 190.dp, max = 330.dp),
-        )
+        Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
+            Text("Ищем", fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        }
+        Box(Modifier.fillMaxWidth().height(78.dp), contentAlignment = Alignment.Center) {
+            Text(
+                item.name,
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF1565C0),
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 36.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Column(
+            Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            SearchItemPhoto(item)
+            Spacer(Modifier.height(12.dp))
+            // The dial is deliberately bounded: the Canvas used to consume
+            // the whole remaining height, leaving empty space below its arc
+            // and visually separating it from the signal reading.
+            AnalogSignalMeter(
+                animatedVisualStrength,
+                Modifier.fillMaxWidth().height(148.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            SignalReadout(animatedVisualStrength, rssi)
+        }
+        Spacer(Modifier.weight(1f))
+        Box(Modifier.fillMaxWidth().height(92.dp), contentAlignment = Alignment.Center) {
+            Text(
+                instruction,
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = 21.sp,
+                lineHeight = 27.sp,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Box(Modifier.fillMaxWidth().height(74.dp), contentAlignment = Alignment.Center) {
+            if (onFinish != null) {
+                Button(onFinish, Modifier.fillMaxSize()) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalReadout(animatedStrength: Float, rssi: Int?) {
+    val percent = normalizedSignalStrengthPercent(animatedStrength)
+    Row(
+        modifier = Modifier.fillMaxWidth().height(58.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
-            signalText,
-            modifier = Modifier.fillMaxWidth(),
-            fontSize = 27.sp,
-            fontWeight = FontWeight.Bold,
-            color = signalColor(signalStrength),
-            textAlign = TextAlign.Center,
+            "Сила сигнала",
+            modifier = Modifier.weight(1f),
+            fontSize = 21.sp,
+            fontWeight = FontWeight.Medium,
         )
-        Text(instruction, modifier = Modifier.fillMaxWidth(), fontSize = 21.sp, textAlign = TextAlign.Center)
-        if (onFinish != null) {
-            Button(onFinish, Modifier.fillMaxWidth().height(74.dp)) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+        Column(
+            modifier = Modifier.width(128.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                "$percent%",
+                modifier = Modifier.fillMaxWidth(),
+                color = signalColor(animatedStrength),
+                fontSize = 31.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 34.sp,
+                textAlign = TextAlign.End,
+            )
+            Text(
+                formatSearchRssi(rssi),
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF546E7A),
+                fontSize = 15.sp,
+                lineHeight = 18.sp,
+                textAlign = TextAlign.End,
+            )
         }
     }
 }
@@ -701,15 +976,10 @@ private fun SearchItemPhoto(item: Item) {
 
 @Composable
 private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
-    val animatedStrength by animateFloatAsState(
-        targetValue = signalStrength.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 340),
-        label = "RFID signal needle",
-    )
     Canvas(modifier) {
         val strokeWidth = (size.minDimension * 0.055f).coerceAtLeast(14f)
         val radius = minOf(size.width * 0.43f, size.height * 0.69f)
-        val center = Offset(size.width / 2f, size.height * 0.80f)
+        val center = Offset(size.width / 2f, size.height * 0.72f)
         val arcTopLeft = Offset(center.x - radius, center.y - radius)
         val arcSize = Size(radius * 2f, radius * 2f)
         val startAngle = 200f
@@ -733,7 +1003,23 @@ private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifi
             drawLine(Color(0xFF263238), inner, outer, strokeWidth = if (index % 5 == 0) 5f else 3f, cap = StrokeCap.Round)
         }
 
-        val needleAngle = Math.toRadians((startAngle + sweepAngle * animatedStrength).toDouble())
+        val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.rgb(38, 50, 56)
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = (size.minDimension * 0.085f).coerceIn(20f, 34f)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        listOf(0 to "0", 5 to "50", 10 to "100").forEach { (index, label) ->
+            val angle = Math.toRadians((startAngle + sweepAngle * index / 10f).toDouble())
+            val labelRadius = radius + strokeWidth * 1.72f
+            val position = Offset(
+                center.x + kotlin.math.cos(angle).toFloat() * labelRadius,
+                center.y + kotlin.math.sin(angle).toFloat() * labelRadius,
+            )
+            drawContext.canvas.nativeCanvas.drawText(label, position.x, position.y, labelPaint)
+        }
+
+        val needleAngle = Math.toRadians((startAngle + sweepAngle * signalStrength.coerceIn(0f, 1f)).toDouble())
         val needleEnd = Offset(
             center.x + kotlin.math.cos(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
             center.y + kotlin.math.sin(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
@@ -778,13 +1064,7 @@ private fun GeigerClickFeedback(signalStrength: Float) {
 }
 
 private const val GEIGER_LOG_TAG = "GeigerClick"
-
-private fun signalDescription(strength: Float): String = when {
-    strength <= 0f -> "Сигнала нет"
-    strength < 0.35f -> "Слабый сигнал"
-    strength < 0.70f -> "Сигнал усиливается"
-    else -> "Метка близко"
-}
+private val VOICE_INLINE_STATUSES = setOf("Слушаю", "Распознаю речь")
 
 private fun signalColor(strength: Float): Color = when {
     strength <= 0f -> Color(0xFF546E7A)
@@ -795,44 +1075,63 @@ private fun signalColor(strength: Float): Color = when {
 
 @Composable
 private fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        ItemDetails(item, item.name, showItemName = false)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ItemDetails(item)
         Text("Нажмите кнопку с нужным действием", fontSize = 23.sp, textAlign = TextAlign.Center)
         Button(
             { viewModel.startSearching(item) },
-            Modifier.fillMaxWidth().height(76.dp),
+            Modifier.fillMaxWidth().height(68.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
         ) { Text("ИСКАТЬ ВЕЩЬ", fontSize = 19.sp) }
-        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(76.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
+        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
+        Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
-private fun ItemDetails(item: Item, title: String, showItemName: Boolean = true) {
-    Text(title, modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+private fun ItemDetails(item: Item) {
+    ThingName(item.name, fontSize = 30.sp)
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
     Box(Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) {
         if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", fontSize = 22.sp)
     }
-    if (showItemName) Text(item.name, modifier = Modifier.fillMaxWidth(), fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
 }
 
 @Composable
 private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel: MainViewModel) {
     val listState = rememberLazyListState()
+    val screenTouchEnabled = LocalScreenTouchEnabled.current
     LaunchedEffect(state.selectedIndex, items.size) { if (items.isNotEmpty()) listState.animateScrollToItem(state.selectedIndex.coerceIn(0, items.lastIndex)) }
-    Box(Modifier.fillMaxSize().padding(14.dp)) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             Text("Каталог", modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-            Text("Volume+ — вверх   Volume− — вниз   Нажмите на вещь", modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), fontSize = 16.sp, textAlign = TextAlign.Center)
+            Text(
+                buildAnnotatedString {
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    append("Громкость+")
+                    pop()
+                    append(" — вверх    ")
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    append("Громкость−")
+                    pop()
+                    append(" — вниз")
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                fontSize = 16.sp,
+                textAlign = TextAlign.Center,
+            )
+            Text("Нажмите на вещь", modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), fontSize = 16.sp, textAlign = TextAlign.Center)
             Box(Modifier.weight(1f)) {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
                     itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
                         Card(
-                            Modifier.fillMaxWidth().height(140.dp).resilientButtonInput({ viewModel.selectCatalogItem(item) }, enabled = true),
+                            Modifier.fillMaxWidth().height(140.dp).catalogCardTapInput(
+                                onClick = { viewModel.selectCatalogItem(item) },
+                                screenTouchEnabled = screenTouchEnabled,
+                            ),
                             colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) Color(0xFFE3F2FD) else Color.White),
                         ) {
                             ItemPreview(item, false, Modifier.padding(10.dp))
@@ -857,11 +1156,11 @@ private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifie
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Box(Modifier.size(if (large) 180.dp else 96.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото", fontSize = if (large) 22.sp else 16.sp) }
-        Text(item.name, fontSize = if (large) 30.sp else 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+        ThingName(item.name, modifier = Modifier.weight(1f), fontSize = if (large) 30.sp else 24.sp, textAlign = TextAlign.Start)
     }
 }
 
-@Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Button(onNext, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОНЯТНО", fontSize = 20.sp) } } }
+@Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Spacer(Modifier.height(20.dp)); Button(onNext, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОНЯТНО", fontSize = 20.sp) } } }
 @Composable
 private fun ConfirmScreen(
     text: String,
@@ -870,21 +1169,14 @@ private fun ConfirmScreen(
     onCancel: () -> Unit,
 ) {
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(8.dp))
         Text(text, fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         if (!highlightedTitle.isNullOrBlank()) {
             Spacer(Modifier.height(18.dp))
-            Text(
-                highlightedTitle,
-                modifier = Modifier.fillMaxWidth(),
-                fontSize = 38.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = Color(0xFFC62828),
-                textAlign = TextAlign.Center,
-            )
+            ThingName(highlightedTitle, fontSize = 38.sp)
         }
         Spacer(Modifier.height(32.dp))
         Button(

@@ -289,7 +289,8 @@ class OfflineVoiceEngine(
 ) {
     private val capture = AudioCaptureSession(context)
     private val diagnostics = VoiceDiagnosticStore(File(context.filesDir, "voice-diagnostics"))
-    var backend: VoiceBackend = VoiceBackend.WHISPER
+    /** Vosk is the production offline recognizer; Whisper is service-only diagnostics. */
+    var backend: VoiceBackend = VoiceBackend.VOSK
     var diagnosticsEnabled: Boolean = false
     val diagnosticStore: VoiceDiagnosticStore get() = diagnostics
 

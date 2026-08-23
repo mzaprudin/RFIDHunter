@@ -38,13 +38,11 @@ class DomainBehaviorTest {
     }
 
     @Test
-    fun searchPowerStartsAtMaximumAndNarrowsOnlyOnStrongSignal() {
-        val policy = SearchPowerPolicy(maxPower = 30, minPower = 5, step = 5)
-        assertEquals(30, policy.maxPower)
-        assertEquals(25, policy.nextPower(30, detected = true, strong = true))
-        assertEquals(30, policy.nextPower(25, detected = false, strong = false))
-        assertEquals(5, policy.nextPower(5, detected = true, strong = true))
-        assertEquals(20, policy.nextPower(20, detected = true, strong = false))
+    fun continuousSearchAlwaysUsesThirtyDbm() {
+        val config = SearchInventoryPolicy.continuousConfig()
+
+        assertEquals(30, config.power)
+        assertEquals(0L, config.durationMs)
     }
 
     @Test
@@ -55,6 +53,9 @@ class DomainBehaviorTest {
         assertTrue(policy.strength(-90) > 0f)
         assertTrue(policy.strength(-62) > policy.strength(-82))
         assertEquals(1f, policy.strength(-35))
+        assertEquals(0f, policy.normalizedStrength(-82))
+        assertEquals(0.5f, policy.normalizedStrength(-62))
+        assertEquals(1f, policy.normalizedStrength(-42))
     }
 
     @Test
@@ -74,8 +75,6 @@ class DomainBehaviorTest {
         tracker.observe(-50, 1_100L)
 
         assertEquals(-60, tracker.currentRssi(1_200L))
-        assertEquals(-50, tracker.takeStrongestObservation())
-        assertNull(tracker.takeStrongestObservation())
         assertNull(tracker.currentRssi(1_601L))
     }
 
@@ -89,14 +88,12 @@ class DomainBehaviorTest {
     }
 
     @Test
-    fun searchSignalTrackerKeepsOneScaleAcrossPowerChanges() {
-        val tracker = SearchSignalTracker(staleAfterMs = 1_000L, smoothingFactor = 0.5, referencePower = 30)
-        tracker.observe(rssi = -50, power = 30, nowMs = 1_000L)
-        tracker.takeStrongestObservation()
-        tracker.observe(rssi = -52, power = 25, nowMs = 1_100L)
+    fun searchSignalTrackerUsesRawRssiWithoutPowerCompensation() {
+        val tracker = SearchSignalTracker(staleAfterMs = 1_000L, smoothingFactor = 0.5)
+        tracker.observe(rssi = -50, nowMs = 1_000L)
+        tracker.observe(rssi = -52, nowMs = 1_100L)
 
-        assertEquals(-50, tracker.currentRssi(1_100L))
-        assertEquals(-52, tracker.takeStrongestObservation())
+        assertEquals(-51, tracker.currentRssi(1_100L))
     }
 
     @Test

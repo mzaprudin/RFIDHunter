@@ -25,10 +25,17 @@ data class SearchSignalPolicy(
         require(cadenceExponent > 0.0)
     }
 
-    fun strength(rssi: Int?): Float {
+    /** Raw 0–1 position for the visual dial's -82…-42 dBm scale. */
+    fun normalizedStrength(rssi: Int?): Float {
         if (rssi == null || rssi == 0) return 0f
-        val normalized = ((rssi - weakestRssi).toFloat() / (strongestRssi - weakestRssi))
+        return ((rssi - weakestRssi).toFloat() / (strongestRssi - weakestRssi))
             .coerceIn(0f, 1f)
+    }
+
+    /** Keeps a small audible deflection for every detected tag. */
+    fun strength(rssi: Int?): Float {
+        val normalized = normalizedStrength(rssi)
+        if (normalized == 0f && (rssi == null || rssi == 0)) return 0f
         return minimumVisibleStrength + normalized * (1f - minimumVisibleStrength)
     }
 

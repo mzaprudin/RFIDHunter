@@ -13,6 +13,21 @@ enum class VoiceInputMode {
     ADD,
 }
 
+/** Current visible stage while the app readies an IH25 for a chosen item. */
+enum class ReaderPreparationStage {
+    SEARCHING,
+    CONNECTING,
+    PREPARING,
+}
+
+/** Explains why a new RFID label must be scanned again. */
+sealed interface NewTagWaitReason {
+    data object Initial : NewTagWaitReason
+    data object NoTag : NewTagWaitReason
+    data object MultipleTags : NewTagWaitReason
+    data class AlreadyAssigned(val item: Item) : NewTagWaitReason
+}
+
 sealed interface AppState {
     data object Idle : AppState
     data object InitialChecking : AppState
@@ -26,7 +41,10 @@ sealed interface AppState {
         val name: String,
         val photoPath: String?,
         val replacingItem: Item? = null,
+        val reason: NewTagWaitReason = NewTagWaitReason.Initial,
     ) : AppState
+    /** Brief completion acknowledgement before returning to the home screen. */
+    data class AddSuccess(val name: String) : AppState
     /** The app is actively recording a short offline voice phrase. */
     data class VoiceListening(
         val mode: VoiceInputMode,
@@ -48,16 +66,19 @@ sealed interface AppState {
         val suggestedItem: Item? = null,
     ) : AppState
     data object AskSearchCommand : AppState
+    /** The selected item is retained while Bluetooth discovery/connection is retried. */
+    data class ReaderPreparation(
+        val item: Item,
+        val stage: ReaderPreparationStage = ReaderPreparationStage.SEARCHING,
+    ) : AppState
     data class SearchTarget(val item: Item) : AppState
     data class RfidSearch(
         val item: Item,
-        val power: Int = 30,
         val rssi: Int? = null,
         val signalStrength: Float = 0f,
     ) : AppState
     data class SearchPaused(
         val item: Item,
-        val power: Int,
         val lastDetection: Boolean = false,
         val lastRssi: Int? = null,
         val signalStrength: Float = 0f,

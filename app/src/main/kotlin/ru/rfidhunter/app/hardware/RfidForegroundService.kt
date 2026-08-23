@@ -9,13 +9,20 @@ import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.IBinder
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +34,7 @@ import ru.rfidhunter.app.BuildConfig
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.TriggerWakeActivity
 import ru.rfidhunter.app.domain.TriggerEvent
+import kotlin.math.roundToInt
 
 class RfidForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -34,6 +42,8 @@ class RfidForegroundService : Service() {
     private var triggerWakeLock: PowerManager.WakeLock? = null
     private val releaseTriggerWake = Runnable { releaseTriggerWakeLock() }
     private var triggerRequestSequence = (SystemClock.elapsedRealtime() and 0x0fff_ffff).toInt()
+    private var triggerOverlayView: View? = null
+    private var triggerOverlayLaunch: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -63,6 +73,10 @@ class RfidForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REMOVE_TRIGGER_OVERLAY) {
+            removeTriggerOverlay()
+            return START_STICKY
+        }
         // Gives hardwareDebug builds a repeatable ADB smoke test for Samsung's
         // background-activity policy without pretending that an RFID tag was
         // read. The non-exported service and BuildConfig guard keep this path
@@ -78,6 +92,7 @@ class RfidForegroundService : Service() {
 
     override fun onDestroy() {
         wakeHandler.removeCallbacks(releaseTriggerWake)
+        removeTriggerOverlay()
         releaseTriggerWakeLock()
         serviceScope.cancel()
         super.onDestroy()
@@ -177,6 +192,19 @@ class RfidForegroundService : Service() {
         }
         if (needsLockScreenLaunch) {
             showFullScreenTriggerNotification(triggerRequestCode, pendingIntent)
+        } else if (Build.VERSION.SDK_INT >= ANDROID_16_API_LEVEL) {
+            if (!Settings.canDrawOverlays(this)) {
+                Log.w(TAG, "Android 16 trigger overlay permission is absent; using notification fallback")
+                showFullScreenTriggerNotification(triggerRequestCode, pendingIntent)
+            } else {
+                val overlayScheduled = showTriggerOverlayAndLaunch(activityIntent) {
+                    showFullScreenTriggerNotification(triggerRequestCode, pendingIntent)
+                }
+                if (!overlayScheduled) {
+                    Log.w(TAG, "Android 16 trigger overlay unavailable; notification fallback posted")
+                    showFullScreenTriggerNotification(triggerRequestCode, pendingIntent)
+                }
+            }
         } else {
             runCatching {
                 pendingIntent.send(this, 0, null, null, null, null, senderOptions)
@@ -186,6 +214,96 @@ class RfidForegroundService : Service() {
             }
         }
     }
+
+    /**
+     * Android 16 accepts a background activity start from an app that has a
+     * visible application overlay. The banner is deliberately non-touchable;
+     * it is only the short, user-visible bridge to TriggerWakeActivity.
+     */
+    private fun showTriggerOverlayAndLaunch(
+        activityIntent: Intent,
+        onFailure: () -> Unit,
+    ): Boolean {
+        if (triggerOverlayView != null) {
+            Log.i(TAG, "Trigger overlay is already visible; duplicate trigger ignored")
+            return true
+        }
+        val windowManager = getSystemService(WindowManager::class.java) ?: run {
+            Log.e(TAG, "WindowManager unavailable for Android 16 trigger overlay")
+            return false
+        }
+        val banner = TextView(this).apply {
+            text = "Открываю Искатель вещей…"
+            setTextColor(android.graphics.Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            gravity = Gravity.CENTER
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.rgb(38, 80, 56))
+                cornerRadius = dp(24).toFloat()
+            }
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+        }
+        val params = WindowManager.LayoutParams(
+            dp(272),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(72)
+            title = "RFID trigger launch"
+        }
+        try {
+            windowManager.addView(banner, params)
+            triggerOverlayView = banner
+            Log.i(TAG, "Android 16 trigger overlay attached")
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Could not attach Android 16 trigger overlay", error)
+            return false
+        }
+
+        val launch = Runnable {
+            if (triggerOverlayView !== banner) return@Runnable
+            try {
+                startActivity(activityIntent)
+                Log.i(TAG, "TriggerWakeActivity started from visible Android 16 overlay")
+            } catch (error: RuntimeException) {
+                Log.e(TAG, "Overlay activity launch failed; using notification fallback", error)
+                onFailure()
+            } finally {
+                removeTriggerOverlay()
+            }
+        }
+        triggerOverlayLaunch = launch
+        if (!banner.post { wakeHandler.postDelayed(launch, OVERLAY_VISIBLE_DURATION_MS) }) {
+            Log.e(TAG, "Could not schedule Android 16 overlay activity launch")
+            removeTriggerOverlay()
+            return false
+        }
+        return true
+    }
+
+    private fun removeTriggerOverlay() {
+        val launch = triggerOverlayLaunch
+        if (launch != null) wakeHandler.removeCallbacks(launch)
+        triggerOverlayLaunch = null
+        val banner = triggerOverlayView ?: return
+        triggerOverlayView = null
+        try {
+            getSystemService(WindowManager::class.java)?.removeView(banner)
+            Log.i(TAG, "Android 16 trigger overlay removed")
+        } catch (error: RuntimeException) {
+            // The system may have already removed the token while the service
+            // is stopping or the trampoline is becoming visible.
+            Log.w(TAG, "Could not remove Android 16 trigger overlay", error)
+        }
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 
     private fun isMainActivityActuallyForeground(): Boolean {
         val lifecycleResumed = (application as RfidHunterApplication).mainActivityResumed
@@ -259,6 +377,7 @@ class RfidForegroundService : Service() {
     companion object {
         private const val TAG = "RfidForegroundService"
         private const val ACTION_DEBUG_TRIGGER = "ru.rfidhunter.app.DEBUG_TRIGGER"
+        const val ACTION_REMOVE_TRIGGER_OVERLAY = "ru.rfidhunter.app.REMOVE_TRIGGER_OVERLAY"
         private const val TRIGGER_CHANNEL_ID = "rfid_trigger"
         private const val LEGACY_TRIGGER_NOTIFICATION_ID = 1002
         private const val ANDROID_16_API_LEVEL = 36
@@ -267,5 +386,6 @@ class RfidForegroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val TRIGGER_WAKE_DURATION_MS = 8_000L
         private const val TRIGGER_NOTIFICATION_LIFETIME_MS = 15_000L
+        private const val OVERLAY_VISIBLE_DURATION_MS = 220L
     }
 }

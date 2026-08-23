@@ -8,7 +8,6 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,9 +34,12 @@ import ru.rfidhunter.app.domain.InventoryConfig
 import ru.rfidhunter.app.domain.InitialRfidDecision
 import ru.rfidhunter.app.domain.Item
 import ru.rfidhunter.app.domain.decideInitialTag
-import ru.rfidhunter.app.domain.SearchPowerPolicy
 import ru.rfidhunter.app.domain.SearchSignalPolicy
 import ru.rfidhunter.app.domain.SearchSignalTracker
+import ru.rfidhunter.app.domain.SearchInventoryPolicy
+import ru.rfidhunter.app.ui.NewTagWaitReason.AlreadyAssigned
+import ru.rfidhunter.app.ui.NewTagWaitReason.MultipleTags
+import ru.rfidhunter.app.ui.NewTagWaitReason.NoTag
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
 import ru.rfidhunter.app.domain.VoiceCommand
@@ -67,9 +69,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var whisper = WhisperVoiceRecognizer(application, whisperVariant)
     private val vosk = VoskVoiceRecognizer(application)
     private var voiceEngine = OfflineVoiceEngine(application, whisper, vosk).apply {
-        backend = VoiceBackend.WHISPER
+        backend = VoiceBackend.VOSK
     }
-    private val _voiceBackend = MutableStateFlow(VoiceBackend.WHISPER)
+    private val _voiceBackend = MutableStateFlow(VoiceBackend.VOSK)
     val voiceBackend: StateFlow<VoiceBackend> = _voiceBackend.asStateFlow()
 
     private val _state = MutableStateFlow<AppState>(AppState.Idle)
@@ -83,11 +85,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var inventoryJob: Job? = null
     private var voiceJob: Job? = null
+    private var addSuccessJob: Job? = null
     private var voiceSessionId = 0L
     private var captureReads = false
     private var photoCaptureInProgress = false
     private val readBuffer = mutableListOf<TagRead>()
-    private val searchPowerPolicy = SearchPowerPolicy()
     private val searchSignalPolicy = SearchSignalPolicy()
     private var triggerPressedAt = 0L
     private var searchResumeJob: Job? = null
@@ -108,11 +110,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch { repository.seedIfEmpty() }
         viewModelScope.launch {
-            VoiceModelInstaller.installWhisperFromAssets(application, whisperVariant)
-            voiceEngine.prepare()
-            // Vosk remains installed for an explicit A/B comparison from the
-            // service screen, but it must not delay q5_1 startup.
             VoiceModelInstaller.installFromAssets(application)
+            voiceEngine.prepare()
         }
         viewModelScope.launch {
             gateway.tagReads.collectLatest {
@@ -140,6 +139,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
+            readerReady.collect { ready ->
+                if (ready) completeReaderPreparation()
+            }
+        }
+        viewModelScope.launch {
             while (isActive) {
                 delay(60_000)
                 if (inactivityPolicy.isExpired(lastActivityAt, System.currentTimeMillis())) expireInactivity()
@@ -148,6 +152,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connectReader() = viewModelScope.launch {
+        automaticSetupJob?.cancel()
         markActivity()
         emitEvent("Подключаю считыватель")
         gateway.connect()
@@ -155,7 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Start a five-second BLE scan; selecting a row persists its MAC. */
     fun scanReaders(timeoutMs: Long = 5_000L) {
-        if (scanJob?.isActive == true) return
+        if (scanJob?.isActive == true || automaticSetupJob?.isActive == true) return
         markActivity()
         scanJob = viewModelScope.launch {
             try {
@@ -173,111 +178,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Hands-off startup flow for the single-user device: scan nearby BLE
-     * devices immediately, prefer a saved reader when it is visible, and
-     * automatically connect an unambiguous IH25.
+     * The one BLE discovery/connection workflow shared by startup and the
+     * selected-item preparation screen.  Startup makes a single attempt;
+     * while [AppState.ReaderPreparation] is visible the same job retries.
      */
     fun startAutomaticReaderSetup() {
         if (fakeGateway != null || automaticSetupJob?.isActive == true) return
         if (readerReady.value && connectionState.value == ConnectionState.CONNECTED) return
+        // A manual Service scan must not overlap the automatic scan/connect
+        // sequence. It is safe to cancel because this call is a newer request.
+        scanJob?.cancel()
         automaticSetupJob = viewModelScope.launch {
             markActivity()
-            val savedAddress = gateway.readerAddress
-            val startupDevices = runCatching { gateway.scanDevices(5_000L) }.getOrElse {
-                emitEvent("Не удалось найти считыватель")
-                return@launch
-            }
-            val startupLikely = startupDevices.filter { it.likelyHoneywell }
-            val savedCandidate = savedAddress.takeIf { it.isNotBlank() }
-                ?.let { address -> startupDevices.firstOrNull { it.macAddress.equals(address, ignoreCase = true) } }
-            val startupCandidateOrNull = when {
-                savedCandidate != null -> savedCandidate
-                savedAddress.isNotBlank() -> RfidDevice("Saved IH25", savedAddress, 0, true)
-                startupLikely.size == 1 -> startupLikely.single()
-                startupLikely.isEmpty() && startupDevices.size == 1 -> startupDevices.single()
-                else -> null
-            }
-            if (startupCandidateOrNull == null) {
-                if (startupLikely.size > 1 || startupDevices.size > 1) {
-                    emitEvent("Рядом несколько устройств. Откройте сервис для выбора считывателя")
-                } else {
-                    emitEvent("Считыватель не найден. Включите IH25 и поднесите его ближе")
-                }
-                return@launch
-            }
-            val startupCandidate = startupCandidateOrNull ?: return@launch
-            gateway.readerAddress = startupCandidate.macAddress
-            emitEvent("Найден ${startupCandidate.name}. Подключаю")
-            gateway.connect()
-            // Reader creation can take tens of seconds on a cold IH25
-            // session. Keep the simple main-screen status alive while it
-            // completes, then surface a recoverable error instead of hanging.
-            var ready = withTimeoutOrNull(30_000L) {
-                while (!readerReady.value) delay(100)
-                readerReady.value
-            } == true
-            if (!ready && !readerReady.value) {
-                runCatching { gateway.disconnect() }
-                emitEvent("Считыватель не ответил. Повторите запуск")
-            }
-            if (!ready && !readerReady.value) {
-                delay(500)
-                emitEvent("Повторяю подключение")
-                gateway.connect()
-                ready = withTimeoutOrNull(30_000L) {
-                    while (!readerReady.value) delay(100)
-                    readerReady.value
-                } == true
-            }
-            return@launch
-
-    // Legacy flow removed; startup scans first.
-    /*
-            // net for source compatibility; the hands-off path above always
-            // returns after the immediate scan decision.
-            if (false) {
-            if (savedAddress.isNotBlank() && connectionState.value == ConnectionState.DISCONNECTED) {
-                emitEvent("Подключаю сохранённый считыватель")
-                gateway.connect()
-                // IH25 firmware setup can take 20+ seconds after a cold
-                // Bluetooth session. Do not disconnect while createReader is
-                // still programming the module.
-                val ready = withTimeoutOrNull(30_000L) {
-                    while (!readerReady.value && connectionState.value != ConnectionState.ERROR) delay(100)
-                    readerReady.value
-                } == true
-                if (ready) return@launch
-                runCatching { gateway.disconnect() }
-            }
-
-            val devices = runCatching { gateway.scanDevices(5_000L) }.getOrElse {
-                emitEvent("Не удалось найти считыватель")
-                return@launch
-            }
-            val likely = devices.filter { it.likelyHoneywell }
-            val candidateOrNull = when {
-                savedAddress.isNotBlank() -> devices.firstOrNull { it.macAddress.equals(savedAddress, ignoreCase = true) }
-                likely.size == 1 -> likely.single()
-                likely.isEmpty() && devices.size == 1 -> devices.single()
-                else -> null
-            }
-            if (candidateOrNull == null) {
-                if (likely.size > 1 || devices.size > 1) {
-                    emitEvent("Рядом несколько устройств. Откройте сервис для выбора считывателя")
-                } else {
-                    emitEvent("Считыватель не найден. Включите IH25 и поднесите его ближе")
-                }
-                return@launch
-            }
-            val candidate = candidateOrNull ?: return@launch
-            gateway.readerAddress = candidate.macAddress
-            emitEvent("Найден ${candidate.name}. Подключаю")
-            gateway.connect()
-            }
-    */
+            do {
+                val ready = automaticReaderSetupAttempt()
+                if (ready || !isReaderPreparationActive()) break
+                delay(READER_SETUP_RETRY_DELAY_MS)
+            } while (isActive && !readerReady.value)
         }.also { job ->
             job.invokeOnCompletion { if (automaticSetupJob === job) automaticSetupJob = null }
         }
+    }
+
+    private suspend fun automaticReaderSetupAttempt(): Boolean {
+        if (readerReady.value) {
+            completeReaderPreparation()
+            return true
+        }
+        updateReaderPreparationStage(ReaderPreparationStage.SEARCHING)
+        val savedAddress = gateway.readerAddress
+        val devices = runCatching { gateway.scanDevices(READER_SCAN_TIMEOUT_MS) }.getOrElse {
+            reportReaderSetupIssue("Не удалось найти считыватель")
+            return false
+        }
+        val likely = devices.filter { it.likelyHoneywell }
+        val savedCandidate = savedAddress.takeIf { it.isNotBlank() }
+            ?.let { address -> devices.firstOrNull { it.macAddress.equals(address, ignoreCase = true) } }
+        val candidate = when {
+            savedCandidate != null -> savedCandidate
+            // A stored address is still worth trying: an IH25 can be slower
+            // than Android's scan callback when waking from sleep.
+            savedAddress.isNotBlank() -> RfidDevice("Saved IH25", savedAddress, 0, true)
+            likely.size == 1 -> likely.single()
+            likely.isEmpty() && devices.size == 1 -> devices.single()
+            else -> null
+        }
+        if (candidate == null) {
+            reportReaderSetupIssue(
+                if (likely.size > 1 || devices.size > 1) {
+                    "Рядом несколько устройств. Откройте сервис для выбора считывателя"
+                } else {
+                    "Считыватель не найден. Включите IH25 и поднесите его ближе"
+                },
+            )
+            return false
+        }
+
+        gateway.readerAddress = candidate.macAddress
+        updateReaderPreparationStage(ReaderPreparationStage.CONNECTING)
+        emitReaderSetupProgress("Найден ${candidate.name}. Подключаю")
+        gateway.connect()
+        updateReaderPreparationStage(ReaderPreparationStage.PREPARING)
+        val ready = withTimeoutOrNull(READER_READY_TIMEOUT_MS) {
+            while (!readerReady.value && connectionState.value != ConnectionState.ERROR) delay(100)
+            readerReady.value
+        } == true
+        if (ready) {
+            completeReaderPreparation()
+            return true
+        }
+        // Reset the SDK session before the next five-second retry. Do not do
+        // this on coroutine cancellation: Back only cancels preparation.
+        runCatching { gateway.disconnect() }
+        reportReaderSetupIssue("Считыватель не ответил. Повторяю поиск")
+        return false
+    }
+
+    private fun isReaderPreparationActive(): Boolean =
+        shouldRetryReaderPreparation(_state.value, readerReady.value)
+
+    private fun updateReaderPreparationStage(stage: ReaderPreparationStage) {
+        val current = _state.value as? AppState.ReaderPreparation ?: return
+        if (current.stage != stage) _state.value = current.copy(stage = stage)
+    }
+
+    private fun completeReaderPreparation() {
+        val target = preparedSearchTarget(_state.value, readerReady.value) ?: return
+        _state.value = target
+        emitEvent("Ищем ${target.item.name}. Удерживайте курок")
+    }
+
+    private fun emitReaderSetupProgress(text: String) {
+        // The preparation screen renders its own stage. Avoid speaking the
+        // same status every retry, but keep startup feedback for the home UI.
+        if (!isReaderPreparationActive()) emitEvent(text)
+    }
+
+    private fun reportReaderSetupIssue(text: String) {
+        if (!isReaderPreparationActive()) emitEvent(text)
     }
 
     /** Backwards-compatible entry point used by the activity after permissions. */
@@ -286,6 +284,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun retryAutomaticReaderSetup() {
         automaticSetupJob?.cancel()
         startAutomaticReaderSetup()
+    }
+
+    private fun cancelReaderPreparationAndGoIdle() {
+        automaticSetupJob?.cancel()
+        automaticSetupJob = null
+        _state.value = AppState.Idle
     }
 
     fun disconnectReader() = viewModelScope.launch {
@@ -303,7 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _recentReads.value = emptyList()
         emitEvent("Проверяю метки")
         try {
-            startInventoryOffMain(InventoryConfig(power = searchPowerPolicy.maxPower, durationMs = durationMs))
+            startInventoryOffMain(InventoryConfig(power = SearchInventoryPolicy.FIXED_POWER_DBM, durationMs = durationMs))
             delay(durationMs)
         } catch (error: Throwable) {
             emitEvent("Ошибка чтения меток: ${error.message ?: error.javaClass.simpleName}")
@@ -356,7 +360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             delay(SEARCH_RESUME_HOLD_MS)
             val paused = _state.value as? AppState.SearchPaused
             if (triggerPressedAt == pressedAt && paused?.item?.id == current.item.id) {
-                startSearch(current.item, current.power)
+                startSearch(current.item)
             }
         }
     }
@@ -368,7 +372,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val detected = current.rssi != null
         _state.value = AppState.SearchPaused(
             current.item,
-            current.power,
             detected,
             current.rssi,
             current.signalStrength,
@@ -377,10 +380,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startInitialCheck() {
+        if (!canStartInventory()) {
+            emitEvent("Считыватель отключён")
+            return
+        }
         if (inventoryJob?.isActive == true) return
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
-            collectInventory(searchPowerPolicy.minPower, 850)
+            collectInventory(INITIAL_CHECK_POWER_DBM, INITIAL_CHECK_DURATION_MS)
             val reads = synchronized(readBuffer) { readBuffer.toList() }
             when (val decision = decideInitialTag(reads)) {
                 InitialRfidDecision.NoTag -> startVoiceInput(VoiceInputMode.SEARCH)
@@ -401,17 +408,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startNewTagCheck(name: String, photoPath: String?, replacingItem: Item? = null) {
+        if (!canStartInventory()) {
+            emitEvent("Считыватель отключён")
+            return
+        }
         if (inventoryJob?.isActive == true) return
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
-            collectInventory(searchPowerPolicy.minPower, 850)
+            collectInventory(INITIAL_CHECK_POWER_DBM, INITIAL_CHECK_DURATION_MS)
             val reads = synchronized(readBuffer) { readBuffer.toList() }
             when (val decision = decideInitialTag(reads)) {
                 is InitialRfidDecision.Selected -> if (repository.getByEpc(decision.tag.epc) == null) {
                     val newEpc = decision.tag.epc
                     if (replacingItem == null) {
                         repository.insert(name, newEpc, photoPath)
-                        _state.value = AppState.Idle
+                        showAddSuccess(name)
                         emitEvent("Вещь добавлена")
                     } else {
                         val updated = replacingItem.copy(epc = newEpc, name = name, photoPath = photoPath)
@@ -420,15 +431,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         emitEvent("Метка изменена")
                     }
                 } else {
-                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
-                    emitEvent("Эта метка уже привязана к другой вещи")
+                    val assignedItem = repository.getByEpc(decision.tag.epc) ?: return@launch
+                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem, AlreadyAssigned(assignedItem))
+                    emitEvent("Эта метка уже привязана к вещи ${assignedItem.name}. Считайте другую метку")
                 }
                 InitialRfidDecision.Ambiguous -> {
-                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
-                    emitEvent("Не удалось выбрать одну метку. Оставьте рядом только новую")
+                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem, MultipleTags)
+                    emitEvent("Считалось несколько меток. Отойдите вместе с вещью в сторону и попробуйте снова")
                 }
                 InitialRfidDecision.NoTag -> {
-                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
+                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem, NoTag)
                     emitEvent("Нужна одна новая метка")
                 }
             }
@@ -447,74 +459,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun startSearch(item: Item, initialPower: Int = searchPowerPolicy.maxPower) {
+    private fun startSearch(item: Item) {
+        if (!canStartInventory()) {
+            emitEvent("Считыватель отключён")
+            return
+        }
         if (inventoryJob?.isActive == true) return
-        val startingPower = initialPower.coerceIn(searchPowerPolicy.minPower, searchPowerPolicy.maxPower)
-        _state.value = AppState.RfidSearch(item, startingPower)
+        _state.value = AppState.RfidSearch(item)
         inventoryJob = viewModelScope.launch {
-            var power = startingPower
             val tracker = SearchSignalTracker()
             try {
-                coroutineScope {
-                    val observationJob = launch(start = CoroutineStart.UNDISPATCHED) {
-                        gateway.tagObservations.collect { read ->
-                            if (read.epc.equals(item.epc, ignoreCase = true)) {
-                                tracker.observe(read.rssi, power, SystemClock.elapsedRealtime())
-                            }
+                val observationJob = launch(start = CoroutineStart.UNDISPATCHED) {
+                    gateway.tagObservations.collect { read ->
+                        if (read.epc.equals(item.epc, ignoreCase = true)) {
+                            tracker.observe(read.rssi, SystemClock.elapsedRealtime())
                         }
-                    }
-                    try {
-                        startInventoryOffMain(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
-                        var nextPowerUpdateAt = SystemClock.elapsedRealtime() + SEARCH_POWER_UPDATE_INTERVAL_MS
-                        var strongWindows = 0
-                        var missingWindows = 0
-                        while (isActive) {
-                            val now = SystemClock.elapsedRealtime()
-                            if (now >= nextPowerUpdateAt) {
-                                val strongest = tracker.takeStrongestObservation()
-                                when {
-                                    strongest?.let { it > SEARCH_STRONG_RSSI } == true -> {
-                                        strongWindows++
-                                        missingWindows = 0
-                                    }
-                                    strongest == null -> {
-                                        missingWindows++
-                                        strongWindows = 0
-                                    }
-                                    else -> {
-                                        strongWindows = 0
-                                        missingWindows = 0
-                                    }
-                                }
-                                val nextPower = when {
-                                    strongWindows >= SEARCH_STRONG_WINDOWS_TO_NARROW ->
-                                        searchPowerPolicy.nextPower(power, detected = true, strong = true)
-                                    missingWindows >= SEARCH_MISSING_WINDOWS_TO_WIDEN ->
-                                        searchPowerPolicy.nextPower(power, detected = false, strong = false)
-                                    else -> power
-                                }
-                                if (nextPower != power) {
-                                    strongWindows = 0
-                                    missingWindows = 0
-                                    stopInventoryOffMain()
-                                    power = nextPower
-                                    startInventoryOffMain(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
-                                }
-                                nextPowerUpdateAt = now + SEARCH_POWER_UPDATE_INTERVAL_MS
-                            }
-                            val rssi = tracker.currentRssi(now)
-                            _state.value = AppState.RfidSearch(
-                                item = item,
-                                power = power,
-                                rssi = rssi,
-                                signalStrength = searchSignalPolicy.strength(rssi),
-                            )
-                            delay(SEARCH_UI_UPDATE_INTERVAL_MS)
-                        }
-                    } finally {
-                        observationJob.cancel()
                     }
                 }
+                try {
+                startInventoryOffMain(SearchInventoryPolicy.continuousConfig(SEARCH_CONTINUOUS_DURATION_MS))
+                    while (isActive) {
+                        val rssi = tracker.currentRssi(SystemClock.elapsedRealtime())
+                        _state.value = AppState.RfidSearch(
+                            item = item,
+                            rssi = rssi,
+                            signalStrength = searchSignalPolicy.strength(rssi),
+                        )
+                        delay(SEARCH_UI_UPDATE_INTERVAL_MS)
+                    }
+                } finally { observationJob.cancel() }
             } finally {
                 captureReads = false
                 try { stopInventoryOffMain() } catch (_: Throwable) { }
@@ -534,8 +507,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startSearching(item: Item) {
         markActivity()
-        _state.value = AppState.SearchTarget(item)
-        emitEvent("Ищем ${item.name}. Удерживайте курок")
+        when (val destination = manualSearchDestination(item, canStartInventory())) {
+            is AppState.SearchTarget -> {
+                _state.value = destination
+                emitEvent("Ищем ${item.name}. Удерживайте курок")
+            }
+            is AppState.ReaderPreparation -> {
+                _state.value = destination
+                startAutomaticReaderSetup()
+            }
+            else -> error("Unexpected manual-search destination: $destination")
+        }
     }
 
     fun submitVoice(text: String) {
@@ -661,8 +643,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value as? AppState.PhotoReview ?: return
         when (current.context) {
             PhotoContext.NEW_WITH_TAG -> viewModelScope.launch {
-                repository.insert(current.name.orEmpty(), current.epc.orEmpty(), current.path)
-                _state.value = AppState.Idle
+                val name = current.name.orEmpty()
+                repository.insert(name, current.epc.orEmpty(), current.path)
+                showAddSuccess(name)
                 emitEvent("Вещь добавлена")
             }
             PhotoContext.MANUAL_NEW -> _state.value = AppState.WaitForNewTag(current.name.orEmpty(), current.path)
@@ -693,11 +676,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is AppState.Camera -> _state.value = if (current.context == PhotoContext.EDIT_EXISTING) current.item?.let(AppState::ItemCard) ?: AppState.Idle else AppState.Idle
             is AppState.PhotoReview -> _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
             is AppState.WaitForNewTag -> _state.value = current.replacingItem?.let(AppState::ItemCard) ?: AppState.Idle
+            is AppState.AddSuccess -> {
+                addSuccessJob?.cancel()
+                _state.value = AppState.Idle
+            }
             is AppState.VoiceListening -> {
                 voiceJob?.cancel()
                 _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
             }
             is AppState.VoiceConfirmation -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
+            is AppState.ReaderPreparation -> cancelReaderPreparationAndGoIdle()
             AppState.AskSearchCommand, is AppState.SearchTarget, is AppState.SearchPaused, is AppState.RfidSearch -> cancelInventoryAndGoIdle()
             is AppState.ItemCard, is AppState.Catalog, is AppState.MultipleTags -> _state.value = AppState.Idle
             is AppState.Message -> _state.value = current.returnTo
@@ -747,7 +735,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceJob?.cancel()
         voiceEngine.backend = backend
         _voiceBackend.value = backend
-        viewModelScope.launch { voiceEngine.prepare() }
+        viewModelScope.launch {
+            when (backend) {
+                VoiceBackend.WHISPER -> VoiceModelInstaller.installWhisperFromAssets(getApplication(), whisperVariant)
+                VoiceBackend.VOSK -> VoiceModelInstaller.installFromAssets(getApplication())
+            }
+            voiceEngine.prepare()
+        }
         emitEvent(if (backend == VoiceBackend.WHISPER) "Распознавание: Whisper base q5_1" else "Распознавание: Vosk")
     }
 
@@ -889,10 +883,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         emitEvent(
             instruction ?: when {
-                mode == VoiceInputMode.ADD && pendingEpc != null && renameItem == null ->
+                mode == VoiceInputMode.ADD && renameItem == null ->
                     "Добавляем новую вещь. Скажите, как ее назвать?"
                 mode == VoiceInputMode.SEARCH -> "Скажите, что найти?"
-                else -> "Скажите, как назвать вещь?"
+                else -> "Изменяем название вещи «${renameItem?.name}». Скажите новое название."
             },
         )
     }
@@ -930,14 +924,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun markActivity() { lastActivityAt = System.currentTimeMillis() }
 
+    private fun showAddSuccess(name: String) {
+        addSuccessJob?.cancel()
+        val success = AppState.AddSuccess(name)
+        _state.value = success
+        addSuccessJob = viewModelScope.launch {
+            delay(ADD_SUCCESS_DURATION_MS)
+            if (_state.value == success) _state.value = AppState.Idle
+        }
+    }
+
     private fun expireInactivity() {
-        if (photoCaptureInProgress) {
+        if (photoCaptureInProgress || _state.value is AppState.ReaderPreparation) {
             markActivity()
             return
         }
         inventoryJob?.cancel()
         searchResumeJob?.cancel()
         voiceJob?.cancel()
+        addSuccessJob?.cancel()
         captureReads = false
         viewModelScope.launch { try { stopInventoryOffMain() } catch (_: Throwable) { } }
         _state.value = AppState.Idle
@@ -954,6 +959,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = AppState.Idle
     }
 
+    private fun canStartInventory(): Boolean = canStartInventory(readerReady.value, fakeGateway != null)
+
     private suspend fun startInventoryOffMain(config: InventoryConfig) {
         withContext(Dispatchers.IO) { gateway.startInventory(config) }
     }
@@ -968,6 +975,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         scanJob?.cancel()
         automaticSetupJob?.cancel()
         voiceJob?.cancel()
+        addSuccessJob?.cancel()
         inventoryJob?.cancel()
         searchResumeJob?.cancel()
         voiceEngine.release()
@@ -977,11 +985,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val SEARCH_RESUME_HOLD_MS = 1_000L
         const val TRIGGER_WAKE_DEDUP_MS = 750L
+        const val INITIAL_CHECK_POWER_DBM = 5
+        const val INITIAL_CHECK_DURATION_MS = 850L
         const val SEARCH_CONTINUOUS_DURATION_MS = 0L
         const val SEARCH_UI_UPDATE_INTERVAL_MS = 50L
-        const val SEARCH_POWER_UPDATE_INTERVAL_MS = 500L
-        const val SEARCH_STRONG_RSSI = -55
-        const val SEARCH_STRONG_WINDOWS_TO_NARROW = 3
-        const val SEARCH_MISSING_WINDOWS_TO_WIDEN = 4
+        const val ADD_SUCCESS_DURATION_MS = 3_000L
+        const val READER_SCAN_TIMEOUT_MS = 5_000L
+        const val READER_READY_TIMEOUT_MS = 30_000L
+        const val READER_SETUP_RETRY_DELAY_MS = 5_000L
     }
 }
