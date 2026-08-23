@@ -6,7 +6,8 @@ import kotlin.math.pow
  * Converts the RSSI of the target tag into user-facing feedback.
  *
  * A detected tag always produces a small visible deflection. A missing or
- * invalid RSSI produces exactly zero so audio feedback can stop immediately.
+ * invalid RSSI produces exactly zero for the resting needle; the audio layer
+ * maps that value to its slowest background cadence.
  */
 data class SearchSignalPolicy(
     val weakestRssi: Int = -82,

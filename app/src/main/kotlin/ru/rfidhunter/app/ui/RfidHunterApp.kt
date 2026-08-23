@@ -2,6 +2,7 @@ package ru.rfidhunter.app.ui
 
 import android.graphics.BitmapFactory
 import android.media.MediaActionSound
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.activity.compose.BackHandler
@@ -185,7 +186,6 @@ fun RfidHunterApp(
                         is AppState.SearchTarget -> SearchTargetScreen(current)
                         is AppState.RfidSearch -> SearchProgressScreen(current)
                         is AppState.SearchPaused -> SearchPausedScreen(current, viewModel)
-                        is AppState.Found -> FoundScreen(current, viewModel)
                         is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
                         is AppState.Catalog -> CatalogScreen(current, items, viewModel)
                         is AppState.MultipleTags -> MessageScreen(current.message, viewModel::openCatalog)
@@ -318,7 +318,6 @@ private fun feedbackKey(state: AppState): String = when (state) {
     is AppState.SearchTarget -> "target-${state.item.id}"
     is AppState.RfidSearch -> "search-${state.item.id}"
     is AppState.SearchPaused -> "paused-${state.item.id}"
-    is AppState.Found -> "found-${state.item.id}"
     is AppState.VoiceListening -> "voice-${state.mode}-${state.renameItem?.id ?: 0}-${state.attempt}-${state.instruction ?: ""}"
     is AppState.VoiceConfirmation -> "voice-confirm-${state.mode}"
     is AppState.AddName -> "add-name"
@@ -598,7 +597,7 @@ private fun SearchPausedScreen(state: AppState.SearchPaused, viewModel: MainView
         item = state.item,
         signalStrength = state.signalStrength,
         signalText = if (state.lastDetection) signalDescription(state.signalStrength) else "Сигнал пока не найден",
-        instruction = "Удерживайте курок 1 секунду, чтобы продолжить поиск",
+        instruction = "Нажмите и продолжайте держать курок. Через секунду поиск возобновится",
         onFinish = viewModel::finishSearch,
     )
 }
@@ -618,9 +617,10 @@ private fun SearchScreen(
     ) {
         Text("Ищем", modifier = Modifier.fillMaxWidth(), fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         Text(item.name, modifier = Modifier.fillMaxWidth(), fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+        SearchItemPhoto(item)
         AnalogSignalMeter(
             signalStrength,
-            Modifier.fillMaxWidth().weight(1f).heightIn(min = 230.dp, max = 390.dp),
+            Modifier.fillMaxWidth().weight(1f).heightIn(min = 190.dp, max = 330.dp),
         )
         Text(
             signalText,
@@ -633,6 +633,23 @@ private fun SearchScreen(
         Text(instruction, modifier = Modifier.fillMaxWidth(), fontSize = 21.sp, textAlign = TextAlign.Center)
         if (onFinish != null) {
             Button(onFinish, Modifier.fillMaxWidth().height(74.dp)) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+        }
+    }
+}
+
+@Composable
+private fun SearchItemPhoto(item: Item) {
+    val bitmap = remember(item.photoPath) {
+        item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
+    }
+    Box(
+        Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(bitmap, contentDescription = item.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        } else {
+            Text("Фото отсутствует", fontSize = 20.sp)
         }
     }
 }
@@ -690,13 +707,17 @@ private fun GeigerClickFeedback(signalStrength: Float) {
     val latestStrength by rememberUpdatedState(signalStrength)
     DisposableEffect(player) { onDispose { player.release() } }
     LaunchedEffect(player) {
+        var lastClickAt = SystemClock.elapsedRealtime() - policy.clickIntervalMs(latestStrength)
         while (isActive) {
             val strength = latestStrength
-            if (strength <= 0f) {
-                delay(80L)
+            val interval = policy.clickIntervalMs(strength)
+            val now = SystemClock.elapsedRealtime()
+            val dueAt = lastClickAt + interval
+            if (now >= dueAt) {
+                if (player.play()) lastClickAt = now
+                delay(15L)
             } else {
-                player.play()
-                delay(policy.clickIntervalMs(strength))
+                delay((dueAt - now).coerceIn(5L, 20L))
             }
         }
     }
@@ -714,15 +735,6 @@ private fun signalColor(strength: Float): Color = when {
     strength < 0.35f -> Color(0xFF546E7A)
     strength < 0.70f -> Color(0xFFE65100)
     else -> Color(0xFF2E7D32)
-}
-
-@Composable
-private fun FoundScreen(state: AppState.Found, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        ItemDetails(state.item, "ВЕЩЬ НАЙДЕНА")
-        Spacer(Modifier.height(16.dp))
-        Button(viewModel::closeService, Modifier.fillMaxWidth().height(70.dp)) { Text("ГОТОВО", fontSize = 22.sp) }
-    }
 }
 
 @Composable

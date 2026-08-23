@@ -30,9 +30,7 @@ class GeigerClickPlayer(context: Context) {
         soundId = soundPool.load(soundFile.absolutePath, 1)
     }
 
-    fun play() {
-        if (loaded) soundPool.play(soundId, 1f, 1f, 1, 0, 1f)
-    }
+    fun play(): Boolean = loaded && soundPool.play(soundId, 1f, 1f, 1, 0, 1f) != 0
 
     fun release() = soundPool.release()
 

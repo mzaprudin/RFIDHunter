@@ -1,9 +1,12 @@
 package ru.rfidhunter.app.ui
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +14,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -30,10 +34,9 @@ import ru.rfidhunter.app.domain.Item
 import ru.rfidhunter.app.domain.decideInitialTag
 import ru.rfidhunter.app.domain.SearchPowerPolicy
 import ru.rfidhunter.app.domain.SearchSignalPolicy
+import ru.rfidhunter.app.domain.SearchSignalTracker
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
-import ru.rfidhunter.app.domain.TriggerGesture
-import ru.rfidhunter.app.domain.TriggerGestureClassifier
 import ru.rfidhunter.app.domain.VoiceCommand
 import ru.rfidhunter.app.domain.CatalogMatchKind
 import ru.rfidhunter.app.domain.findBestItemMatch
@@ -83,8 +86,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val readBuffer = mutableListOf<TagRead>()
     private val searchPowerPolicy = SearchPowerPolicy()
     private val searchSignalPolicy = SearchSignalPolicy()
-    private val triggerGestureClassifier = TriggerGestureClassifier(1_000)
     private var triggerPressedAt = 0L
+    private var searchResumeJob: Job? = null
+    private var lastHardwareTriggerPressedAt = 0L
     private val inactivityPolicy = InactivityPolicy()
     @Volatile private var lastActivityAt = System.currentTimeMillis()
 
@@ -124,7 +128,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             gateway.triggerEvents.collectLatest { event ->
                 when (event) {
-                    TriggerEvent.PRESSED -> onTriggerPressed()
+                    TriggerEvent.PRESSED -> {
+                        lastHardwareTriggerPressedAt = SystemClock.elapsedRealtime()
+                        onTriggerPressed()
+                    }
                     TriggerEvent.RELEASED -> onTriggerReleased()
                 }
             }
@@ -305,11 +312,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onTriggerPressed() {
         markActivity()
-        triggerPressedAt = System.currentTimeMillis()
+        triggerPressedAt = SystemClock.elapsedRealtime()
         when (val current = _state.value) {
             AppState.Idle, is AppState.Catalog -> startInitialCheck()
             is AppState.SearchTarget -> startSearch(current.item)
-            is AppState.RfidSearch, is AppState.SearchPaused -> Unit
+            is AppState.RfidSearch -> Unit
+            is AppState.SearchPaused -> scheduleSearchResume(current)
             is AppState.WaitForNewTag -> startNewTagCheck(current.name, current.photoPath, current.replacingItem)
             is AppState.ItemCard -> emitEvent("Выберите действие на карточке")
             is AppState.VoiceListening -> listenVoice()
@@ -320,15 +328,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onTriggerReleased() {
         markActivity()
-        val pressedAt = triggerPressedAt
         triggerPressedAt = 0L
+        searchResumeJob?.cancel()
+        searchResumeJob = null
         when (val current = _state.value) {
             is AppState.RfidSearch -> pauseSearch(current)
-            is AppState.SearchPaused -> {
-                val gesture = triggerGestureClassifier.classify(pressedAt, System.currentTimeMillis())
-                if (gesture == TriggerGesture.LONG) startSearch(current.item, current.power) else startInitialCheck()
-            }
+            is AppState.SearchPaused -> startInitialCheck()
             else -> Unit
+        }
+    }
+
+    /** Avoid handling the same physical press again after the wake trampoline. */
+    fun onTriggerWakeIntent() {
+        val now = SystemClock.elapsedRealtime()
+        if (lastHardwareTriggerPressedAt == 0L || now - lastHardwareTriggerPressedAt > TRIGGER_WAKE_DEDUP_MS) {
+            onTriggerPressed()
+        }
+    }
+
+    private fun scheduleSearchResume(current: AppState.SearchPaused) {
+        searchResumeJob?.cancel()
+        val pressedAt = triggerPressedAt
+        searchResumeJob = viewModelScope.launch {
+            delay(SEARCH_RESUME_HOLD_MS)
+            val paused = _state.value as? AppState.SearchPaused
+            if (triggerPressedAt == pressedAt && paused?.item?.id == current.item.id) {
+                startSearch(current.item, current.power)
+            }
         }
     }
 
@@ -425,25 +451,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = AppState.RfidSearch(item, startingPower)
         inventoryJob = viewModelScope.launch {
             var power = startingPower
+            val tracker = SearchSignalTracker()
             try {
-                while (isActive) {
-                    synchronized(readBuffer) { readBuffer.clear() }
-                    captureReads = true
-                    gateway.setReadPower(power)
-                    gateway.startInventory(InventoryConfig(power, 450))
-                    delay(450)
-                    gateway.stopInventory()
-                    captureReads = false
-                    val reads = synchronized(readBuffer) { readBuffer.filter { it.epc.equals(item.epc, true) } }
-                    val bestRssi = reads.asSequence().map { it.rssi }.filter { it != 0 }.maxOrNull()
-                    val signalStrength = searchSignalPolicy.strength(bestRssi)
-                    val strong = bestRssi?.let { it > -55 } == true
-                    if (reads.isNotEmpty()) {
-                        power = searchPowerPolicy.nextPower(power, detected = true, strong = strong)
-                    } else {
-                        power = searchPowerPolicy.nextPower(power, detected = false, strong = false)
+                coroutineScope {
+                    val observationJob = launch(start = CoroutineStart.UNDISPATCHED) {
+                        gateway.tagObservations.collect { read ->
+                            if (read.epc.equals(item.epc, ignoreCase = true)) {
+                                tracker.observe(read.rssi, SystemClock.elapsedRealtime())
+                            }
+                        }
                     }
-                    _state.value = AppState.RfidSearch(item, power, bestRssi, signalStrength)
+                    try {
+                        gateway.startInventory(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
+                        var nextPowerUpdateAt = SystemClock.elapsedRealtime() + SEARCH_POWER_UPDATE_INTERVAL_MS
+                        var strongWindows = 0
+                        var missingWindows = 0
+                        while (isActive) {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now >= nextPowerUpdateAt) {
+                                val strongest = tracker.takeStrongestObservation()
+                                when {
+                                    strongest?.let { it > SEARCH_STRONG_RSSI } == true -> {
+                                        strongWindows++
+                                        missingWindows = 0
+                                    }
+                                    strongest == null -> {
+                                        missingWindows++
+                                        strongWindows = 0
+                                    }
+                                    else -> {
+                                        strongWindows = 0
+                                        missingWindows = 0
+                                    }
+                                }
+                                val nextPower = when {
+                                    strongWindows >= SEARCH_STRONG_WINDOWS_TO_NARROW ->
+                                        searchPowerPolicy.nextPower(power, detected = true, strong = true)
+                                    missingWindows >= SEARCH_MISSING_WINDOWS_TO_WIDEN ->
+                                        searchPowerPolicy.nextPower(power, detected = false, strong = false)
+                                    else -> power
+                                }
+                                if (nextPower != power) {
+                                    power = nextPower
+                                    strongWindows = 0
+                                    missingWindows = 0
+                                    gateway.stopInventory()
+                                    gateway.startInventory(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
+                                }
+                                nextPowerUpdateAt = now + SEARCH_POWER_UPDATE_INTERVAL_MS
+                            }
+                            val rssi = tracker.currentRssi(now)
+                            _state.value = AppState.RfidSearch(
+                                item = item,
+                                power = power,
+                                rssi = rssi,
+                                signalStrength = searchSignalPolicy.strength(rssi),
+                            )
+                            delay(SEARCH_UI_UPDATE_INTERVAL_MS)
+                        }
+                    } finally {
+                        observationJob.cancel()
+                    }
                 }
             } finally {
                 captureReads = false
@@ -454,14 +522,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun finishSearch() {
         markActivity()
-        val item = when (val current = _state.value) {
-            is AppState.RfidSearch -> current.item
-            is AppState.SearchPaused -> current.item
-            else -> return
-        }
+        if (_state.value !is AppState.RfidSearch && _state.value !is AppState.SearchPaused) return
+        searchResumeJob?.cancel()
+        searchResumeJob = null
         inventoryJob?.cancel()
-        _state.value = AppState.Found(item)
-        emitEvent("Поиск завершён: ${item.name}")
+        inventoryJob = null
+        _state.value = AppState.Idle
     }
 
     fun startSearching(item: Item) {
@@ -631,7 +697,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             is AppState.VoiceConfirmation -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
             AppState.AskSearchCommand, is AppState.SearchTarget, is AppState.SearchPaused, is AppState.RfidSearch -> cancelInventoryAndGoIdle()
-            is AppState.Found, is AppState.ItemCard, is AppState.Catalog, is AppState.MultipleTags -> _state.value = AppState.Idle
+            is AppState.ItemCard, is AppState.Catalog, is AppState.MultipleTags -> _state.value = AppState.Idle
             is AppState.Message -> _state.value = current.returnTo
             AppState.Service, is AppState.Error -> _state.value = AppState.Idle
         }
@@ -868,6 +934,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         inventoryJob?.cancel()
+        searchResumeJob?.cancel()
         voiceJob?.cancel()
         captureReads = false
         viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
@@ -878,6 +945,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun cancelInventoryAndGoIdle() {
         inventoryJob?.cancel()
         inventoryJob = null
+        searchResumeJob?.cancel()
+        searchResumeJob = null
         captureReads = false
         viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
         _state.value = AppState.Idle
@@ -890,7 +959,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         automaticSetupJob?.cancel()
         voiceJob?.cancel()
         inventoryJob?.cancel()
+        searchResumeJob?.cancel()
         voiceEngine.release()
         super.onCleared()
+    }
+
+    private companion object {
+        const val SEARCH_RESUME_HOLD_MS = 1_000L
+        const val TRIGGER_WAKE_DEDUP_MS = 750L
+        const val SEARCH_CONTINUOUS_DURATION_MS = 0L
+        const val SEARCH_UI_UPDATE_INTERVAL_MS = 50L
+        const val SEARCH_POWER_UPDATE_INTERVAL_MS = 500L
+        const val SEARCH_STRONG_RSSI = -55
+        const val SEARCH_STRONG_WINDOWS_TO_NARROW = 3
+        const val SEARCH_MISSING_WINDOWS_TO_WIDEN = 2
     }
 }

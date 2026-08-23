@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
         if (blePermissionsReady()) vm.autoConnectSavedReader()
         if (intent.getBooleanExtra(EXTRA_TRIGGER_ON_START, false)) {
             intent.removeExtra(EXTRA_TRIGGER_ON_START)
-            vm.onTriggerPressed()
+            vm.onTriggerWakeIntent()
         }
         if (intent.getBooleanExtra(EXTRA_OPEN_SERVICE, false)) {
             intent.removeExtra(EXTRA_OPEN_SERVICE)
@@ -69,9 +69,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        (application as RfidHunterApplication).mainActivityResumed = true
         refreshPermissions()
         startReaderServiceWhenPermitted()
         if (blePermissionsReady()) activeViewModel?.autoConnectSavedReader()
+    }
+
+    override fun onPause() {
+        (application as RfidHunterApplication).mainActivityResumed = false
+        super.onPause()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -113,7 +119,7 @@ class MainActivity : ComponentActivity() {
                 setTurnScreenOn(true)
             }
             intent.removeExtra(EXTRA_TRIGGER_ON_START)
-            activeViewModel?.onTriggerPressed()
+            activeViewModel?.onTriggerWakeIntent()
         }
         if (intent.getBooleanExtra(EXTRA_OPEN_SERVICE, false)) {
             intent.removeExtra(EXTRA_OPEN_SERVICE)

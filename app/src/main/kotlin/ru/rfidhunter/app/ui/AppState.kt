@@ -62,7 +62,6 @@ sealed interface AppState {
         val lastRssi: Int? = null,
         val signalStrength: Float = 0f,
     ) : AppState
-    data class Found(val item: Item) : AppState
     data class ItemCard(val item: Item) : AppState
     data class Catalog(val selectedIndex: Int = 0) : AppState
     data class MultipleTags(val message: String = "Найдено несколько меток") : AppState

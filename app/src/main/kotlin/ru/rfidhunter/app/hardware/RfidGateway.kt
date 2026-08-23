@@ -15,6 +15,9 @@ interface RfidGateway {
     val triggerEvents: Flow<TriggerEvent>
     val tagReads: Flow<TagRead>
 
+    /** Every RSSI observation, including weaker repeats needed by live search. */
+    val tagObservations: Flow<TagRead> get() = tagReads
+
     /** Devices found by the most recent Bluetooth scan. */
     val discoveredDevices: StateFlow<List<RfidDevice>> get() = EMPTY_DEVICES
 

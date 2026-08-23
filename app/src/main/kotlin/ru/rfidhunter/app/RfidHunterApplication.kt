@@ -7,6 +7,9 @@ import ru.rfidhunter.app.hardware.GatewayFactory
 import ru.rfidhunter.app.hardware.RfidGateway
 
 class RfidHunterApplication : Application() {
+    @Volatile
+    var mainActivityResumed: Boolean = false
+
     val database by lazy { AppDatabase.create(this) }
     val itemRepository by lazy { ItemRepository(database.itemDao()) }
     /** One process-wide gateway prevents the Activity and foreground service from registering duplicate SDK listeners. */

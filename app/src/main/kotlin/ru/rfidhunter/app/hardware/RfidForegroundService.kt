@@ -125,6 +125,10 @@ class RfidForegroundService : Service() {
     }
 
     private fun bringActivityForwardForTrigger() {
+        if ((application as RfidHunterApplication).mainActivityResumed) {
+            Log.i(TAG, "MainActivity already resumed; trigger wake UI skipped")
+            return
+        }
         val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
         val keyguardManager = getSystemService(KeyguardManager::class.java)
         val needsLockScreenLaunch = powerManager?.isInteractive == false || keyguardManager?.isKeyguardLocked == true

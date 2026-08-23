@@ -40,12 +40,14 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     private val _triggerEvents = MutableSharedFlow<TriggerEvent>(extraBufferCapacity = 16)
     private val _tagReads = MutableSharedFlow<TagRead>(extraBufferCapacity = 128)
+    private val _tagObservations = MutableSharedFlow<TagRead>(extraBufferCapacity = 512)
     private val _discoveredDevices = MutableStateFlow<List<RfidDevice>>(emptyList())
     private val _scanState = MutableStateFlow(ReaderScanState.IDLE)
     private val _diagnosticMessage = MutableStateFlow<String?>(null)
     private val _readerReady = MutableStateFlow(false)
     private var reader: RfidReader? = null
     private var inventoryActive = false
+    private var appliedReadPower: Int? = null
     override var lastInventoryConfig: InventoryConfig? = null
     private var released = false
     private val sessionTags = LinkedHashMap<String, TagRead>()
@@ -54,6 +56,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     override val connectionState: StateFlow<ConnectionState> = _connectionState
     override val triggerEvents: SharedFlow<TriggerEvent> = _triggerEvents
     override val tagReads: SharedFlow<TagRead> = _tagReads
+    override val tagObservations: SharedFlow<TagRead> = _tagObservations
     override val discoveredDevices: StateFlow<List<RfidDevice>> = _discoveredDevices
     override val scanState: StateFlow<ReaderScanState> = _scanState
     override val diagnosticMessage: StateFlow<String?> = _diagnosticMessage
@@ -85,6 +88,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
             Log.i(TAG, "IH25 device disconnected: $data")
             stopInventorySafely()
             reader = null
+            appliedReadPower = null
             _readerReady.value = false
             _connectionState.value = ConnectionState.DISCONNECTED
             _diagnosticMessage.value = "Считыватель отключён"
@@ -245,6 +249,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     override suspend fun disconnect() {
         stopInventorySafely()
         reader = null
+        appliedReadPower = null
         _readerReady.value = false
         runCatching { manager.disconnect() }.onFailure { _diagnosticMessage.value = "Ошибка отключения: ${it.message}" }
         _connectionState.value = ConnectionState.DISCONNECTED
@@ -258,16 +263,20 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
         }
         try {
             lastInventoryConfig = config
-            setReadPower(config.power)
+            if (appliedReadPower != config.power) setReadPower(config.power)
+            if (appliedReadPower != config.power) {
+                _diagnosticMessage.value = "SDK не принял мощность ${config.power} dBm"
+                return
+            }
             sessionTags.clear()
             current.removeOnTagReadListener(tagListener)
             current.setOnTagReadListener(tagListener)
-            // Request RSSI (and read count) explicitly.  The Honeywell SDK's
-            // default TagReadOption does not include RSSI, which otherwise
-            // leaves every emitted TagRead with a misleading zero value.
+            // Request only the metadata used by live search. Keeping the
+            // payload to EPC + RSSI and disabling the inter-round pause gives
+            // the IH25 the highest practical observation cadence.
             val option = TagReadOption().apply {
                 setRssi(true)
-                setReadCount(true)
+                setStopPercent(0)
             }
             if (!current.read(TagAdditionData.get("None"), option)) {
                 _diagnosticMessage.value = "SDK не запустил инвентаризацию"
@@ -287,11 +296,15 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     override suspend fun setReadPower(power: Int) {
         val current = reader ?: return
         try {
+            val sdkPower = power * SDK_POWER_UNITS_PER_DBM
             val antennas = current.getAntennaPower()
-            antennas.forEach { it.setReadPower(power) }
+            antennas.forEach { it.setReadPower(sdkPower) }
             current.setAntennaPower(antennas)
+            appliedReadPower = power
+            Log.i(TAG, "Antenna power set to $power dBm (SDK value $sdkPower)")
         } catch (error: Throwable) {
             _diagnosticMessage.value = "Ошибка мощности антенны: ${error.message ?: error.javaClass.simpleName}"
+            Log.w(TAG, "Could not set antenna power to $power", error)
         }
     }
 
@@ -306,6 +319,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
         stopInventorySafely()
         runCatching { manager.removeEventListener(listener) }
         reader = null
+        appliedReadPower = null
         _readerReady.value = false
     }
 
@@ -344,6 +358,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
             if (epc.isBlank()) return@forEach
             val read = TagRead(epc, runCatching { tag.getRssi() }.getOrDefault(0))
             Log.i(TAG, "RFID tag read epc=$epc rssi=${read.rssi}")
+            _tagObservations.tryEmit(read)
             val key = epc.uppercase()
             val previous = sessionTags[key]
             if (previous == null || isBetterRssi(read.rssi, previous.rssi)) {
@@ -365,5 +380,6 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     private companion object {
         const val TAG = "HoneywellRfidGateway"
         const val KEY_READER_ADDRESS = "reader_mac"
+        const val SDK_POWER_UNITS_PER_DBM = 100
     }
 }

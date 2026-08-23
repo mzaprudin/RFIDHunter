@@ -67,6 +67,27 @@ class DomainBehaviorTest {
     }
 
     @Test
+    fun searchSignalTrackerSmoothsUpdatesAndExpiresStaleSignal() {
+        val tracker = SearchSignalTracker(staleAfterMs = 500L, smoothingFactor = 0.5)
+        tracker.observe(-70, 1_000L)
+        tracker.observe(-50, 1_100L)
+
+        assertEquals(-60, tracker.currentRssi(1_200L))
+        assertEquals(-50, tracker.takeStrongestObservation())
+        assertNull(tracker.takeStrongestObservation())
+        assertNull(tracker.currentRssi(1_601L))
+    }
+
+    @Test
+    fun searchSignalTrackerRestartsAfterAReadingGap() {
+        val tracker = SearchSignalTracker(staleAfterMs = 500L, smoothingFactor = 0.5)
+        tracker.observe(-80, 1_000L)
+        tracker.observe(-45, 1_600L)
+
+        assertEquals(-45, tracker.currentRssi(1_600L))
+    }
+
+    @Test
     fun normalizationIsRussianOfflineSafe() {
         assertEquals("елка", normalizeText("Ёлка!"))
         assertTrue(normalizedTokens("пульт от ТВ").contains("тв"))
