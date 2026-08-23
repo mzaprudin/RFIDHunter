@@ -14,6 +14,7 @@ def client(tmp_path: Path) -> TestClient:
     settings = Settings(
         database_path=tmp_path / "backup.sqlite3",
         files_dir=tmp_path / "files",
+        access_token="test-token",
         max_file_bytes=1024,
     )
     with TestClient(create_app(settings)) as test_client:

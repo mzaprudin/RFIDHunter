@@ -4,6 +4,7 @@ import hashlib
 import re
 import sqlite3
 import tempfile
+import logging
 from threading import Lock
 from pathlib import Path
 
@@ -16,6 +17,38 @@ from .schemas import FileResult, SyncEvent, SyncResult
 
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+logger = logging.getLogger(__name__)
+
+
+class TokenPathMiddleware:
+    """Expose the app only below an unguessable path prefix.
+
+    The TCP protocol guard closes unprefixed connections before they reach
+    ASGI. This middleware both protects direct ASGI use and removes the token
+    before handing a valid path to the FastAPI router.
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.prefix = f"/{token}"
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path != self.prefix and not path.startswith(f"{self.prefix}/"):
+            # TestClient and other in-process ASGI consumers have no transport
+            # to close, so keep their behaviour equivalent: no HTTP response.
+            return
+        trimmed = path[len(self.prefix):] or "/"
+        forwarded_scope = dict(scope)
+        forwarded_scope["path"] = trimmed
+        raw_path = scope.get("raw_path")
+        if raw_path is not None:
+            prefix_bytes = self.prefix.encode("utf-8")
+            forwarded_scope["raw_path"] = raw_path[len(prefix_bytes):] or b"/"
+        await self.app(forwarded_scope, receive, send)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -26,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="RFIDHunter Backup API", version="0.1.0")
     app.state.settings = settings
     app.state.database = database
+    app.add_middleware(TokenPathMiddleware, token=settings.access_token)
+    logger.info("RFIDHunter backup token: %s", settings.access_token)
 
     @app.get("/health")
     def health() -> dict[str, str]:

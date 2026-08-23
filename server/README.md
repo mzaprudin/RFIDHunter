@@ -10,15 +10,21 @@
 
 ```powershell
 uv sync --dev
-uv run uvicorn rfidhunter_server.app:app --reload --host 127.0.0.1 --port 8080
+uv run python -m rfidhunter_server --host 127.0.0.1 --port 8080
 ```
 
 Проверка:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8080/health
+Invoke-RestMethod http://127.0.0.1:8080/<token>/health
 uv run pytest
 ```
+
+At first start the server creates a random URL-safe token in
+`server/data/access_token` and logs it. Configure the Android service screen
+with the full base URL, for example `http://host:8080/<token>`. To supply a
+known value use `RFIDHUNTER_TOKEN`; to store it elsewhere use
+`RFIDHUNTER_TOKEN_FILE`.
 
 По умолчанию данные находятся в `server/data/` (этот каталог не коммитится).
 Для другого места задайте `RFIDHUNTER_DATA_DIR`, либо отдельно
@@ -27,11 +33,16 @@ uv run pytest
 ## API
 
 ```text
-PUT  /v1/files/{sha256}
-POST /v1/sync/events
-GET  /v1/sync/items?device_id=...
-GET  /v1/files/{sha256}
+PUT  /<token>/v1/files/{sha256}
+POST /<token>/v1/sync/events
+GET  /<token>/v1/sync/items?device_id=...
+GET  /<token>/v1/files/{sha256}
 ```
+
+Connections whose first request does not include the exact token prefix are
+closed without an HTTP response. The token is deliberately not committed.
+It prevents casual discovery of the API but does not replace HTTPS or network
+access control; use both when the server is exposed outside a trusted LAN.
 
 Сначала отправляется JPEG-файл. Сервер проверяет, что SHA-256 тела совпадает с
 путём. Затем отправляется событие. Для `UPSERT` обязательны `name` и `epc`;
