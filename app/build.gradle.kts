@@ -137,6 +137,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.alphacephei:vosk-android:0.3.75")
 
     add("hardwareImplementation", files("../Honeywell_RFID_SDK_v0.5.0/libs/honeywell_rfid_sdk.aar"))

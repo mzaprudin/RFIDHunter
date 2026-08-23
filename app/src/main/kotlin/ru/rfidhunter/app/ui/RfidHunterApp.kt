@@ -24,6 +24,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -65,6 +66,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -99,8 +101,11 @@ import ru.rfidhunter.app.BuildConfig
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import ru.rfidhunter.app.domain.ConnectionState
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.Item
@@ -681,6 +686,7 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var processingPhoto by remember { mutableStateOf(false) }
+    val photoScope = rememberCoroutineScope()
     val shutterSound = remember(context) { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
     val vibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
     DisposableEffect(shutterSound) { onDispose { shutterSound.release() } }
@@ -695,13 +701,27 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
     LaunchedEffect(viewModel, controller) {
         viewModel.photoCapture.collect {
             if (!permission) return@collect
+            if (processingPhoto) return@collect
             processingPhoto = true
             val directory = File(context.filesDir, "photos").apply { mkdirs() }
-            val file = File(directory, "photo_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg")
-            val options = ImageCapture.OutputFileOptions.Builder(file).build()
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+            val source = File(directory, "capture_$timestamp.jpg")
+            val file = File(directory, "photo_$timestamp.jpg")
+            val options = ImageCapture.OutputFileOptions.Builder(source).build()
             controller.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) { processingPhoto = false; viewModel.onPhotoCaptured(file.absolutePath) }
-                override fun onError(exception: ImageCaptureException) { processingPhoto = false; viewModel.onPhotoCaptureFailed() }
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    photoScope.launch {
+                        val normalized = withContext(Dispatchers.Default) { PhotoProcessor.normalize(source, file) }
+                        processingPhoto = false
+                        if (normalized) {
+                            viewModel.onPhotoCaptured(file.absolutePath)
+                        } else {
+                            source.delete()
+                            viewModel.onPhotoCaptureFailed()
+                        }
+                    }
+                }
+                override fun onError(exception: ImageCaptureException) { processingPhoto = false; source.delete(); viewModel.onPhotoCaptureFailed() }
             })
         }
     }
@@ -714,7 +734,18 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
             Button(requestPermission, Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
         }
     } else Box(Modifier.fillMaxSize()) {
-        AndroidView({ PreviewView(it).apply { this.controller = controller } }, Modifier.fillMaxSize())
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(3f / 4f).align(Alignment.TopCenter)
+                .clip(RoundedCornerShape(12.dp)).background(Color.Black),
+        ) {
+            AndroidView({ PreviewView(it).apply { this.controller = controller; scaleType = PreviewView.ScaleType.FILL_CENTER } }, Modifier.fillMaxSize())
+            Text(
+                "Кадр 3:4",
+                modifier = Modifier.align(Alignment.TopCenter).background(Color.Black.copy(alpha = .55f)).padding(horizontal = 10.dp, vertical = 5.dp),
+                color = Color.White,
+                fontSize = 14.sp,
+            )
+        }
         Text(
             buildAnnotatedString {
                 append("Нажмите ")

@@ -32,6 +32,11 @@ contains `operationId`, `deviceId`, `operation` (`UPSERT` or `DELETE`),
 `operationId` is also sent as `X-RFID-Operation-Id`; the server must treat a
 repeated operation ID as an already-applied operation.
 
+Before a catalog photo reaches this queue, the Android app centre-crops it to
+portrait 3:4 and stores a JPEG no larger than 1080x1440 at quality 82. The
+original camera file is removed, so neither the local catalog nor the backup
+traffic contains full-resolution photos.
+
 The device ID is generated once and stored locally. It is not an Android ID
 and is not sent until an endpoint is configured. Authentication is deliberately
 left for the server phase; credentials must not be hard-coded into the APK.
