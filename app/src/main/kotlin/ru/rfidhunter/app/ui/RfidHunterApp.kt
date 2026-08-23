@@ -74,6 +74,7 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -1026,11 +1027,15 @@ private fun SearchItemPhoto(item: Item) {
         item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
     }
     Box(
-        Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)),
+        Modifier
+            .width(160.dp)
+            .aspectRatio(3f / 4f)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFFE0E0E0)),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
-            Image(bitmap, contentDescription = item.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            Image(bitmap, contentDescription = item.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
             Text("Фото отсутствует", fontSize = 20.sp)
         }
@@ -1039,10 +1044,13 @@ private fun SearchItemPhoto(item: Item) {
 
 @Composable
 private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
-    Canvas(modifier) {
+    Canvas(modifier.clipToBounds()) {
         val strokeWidth = (size.minDimension * 0.055f).coerceAtLeast(14f)
-        val radius = minOf(size.width * 0.43f, size.height * 0.69f)
-        val center = Offset(size.width / 2f, size.height * 0.72f)
+        // Keep labels and tick marks inside the reserved Canvas slot. Canvas
+        // itself is not clipped, so the former geometry could paint on top of
+        // the photo above it on compact screens.
+        val radius = minOf(size.width * 0.35f, size.height * 0.43f)
+        val center = Offset(size.width / 2f, size.height * 0.75f)
         val arcTopLeft = Offset(center.x - radius, center.y - radius)
         val arcSize = Size(radius * 2f, radius * 2f)
         val startAngle = 200f
@@ -1158,8 +1166,11 @@ private fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
 private fun ItemDetails(item: Item) {
     ThingName(item.name, fontSize = 30.sp)
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
-    Box(Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) {
-        if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", fontSize = 22.sp)
+    Box(
+        Modifier.width(180.dp).aspectRatio(3f / 4f).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)),
+        Alignment.Center,
+    ) {
+        if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото отсутствует", fontSize = 22.sp)
     }
 }
 
@@ -1191,7 +1202,7 @@ private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel:
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
                     itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
                         Card(
-                            Modifier.fillMaxWidth().height(140.dp).catalogCardTapInput(
+                            Modifier.fillMaxWidth().height(150.dp).catalogCardTapInput(
                                 onClick = { viewModel.selectCatalogItem(item) },
                                 screenTouchEnabled = screenTouchEnabled,
                             ),
@@ -1218,7 +1229,14 @@ private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel:
 private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifier) {
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.size(if (large) 180.dp else 96.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFE0E0E0)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото", fontSize = if (large) 22.sp else 16.sp) }
+        Box(
+            Modifier
+                .width(if (large) 180.dp else 102.dp)
+                .aspectRatio(3f / 4f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFFE0E0E0)),
+            Alignment.Center,
+        ) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото", fontSize = if (large) 22.sp else 16.sp) }
         ThingName(item.name, modifier = Modifier.weight(1f), fontSize = if (large) 30.sp else 24.sp, textAlign = TextAlign.Start)
     }
 }
