@@ -20,6 +20,9 @@ class TriggerWakeActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0)
+            .takeIf { it != 0 }
+            ?.let { getSystemService(NotificationManager::class.java).cancel(it) }
         @Suppress("DEPRECATION")
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
@@ -50,9 +53,6 @@ class TriggerWakeActivity : Activity() {
             )
             @Suppress("DEPRECATION")
             overridePendingTransition(0, 0)
-            intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0)
-                .takeIf { it != 0 }
-                ?.let { getSystemService(NotificationManager::class.java).cancel(it) }
             finishAndRemoveTask()
         }
     }
