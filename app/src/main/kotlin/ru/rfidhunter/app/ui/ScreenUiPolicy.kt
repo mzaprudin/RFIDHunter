@@ -3,7 +3,7 @@ package ru.rfidhunter.app.ui
 import kotlin.math.roundToInt
 
 /** Screen touches are ignored briefly after every logical screen change. */
-internal const val TOUCH_GATE_DELAY_MS = 1_000L
+internal const val TOUCH_GATE_DELAY_MS = 600L
 
 /**
  * Identifies logical screens for the touch gate.

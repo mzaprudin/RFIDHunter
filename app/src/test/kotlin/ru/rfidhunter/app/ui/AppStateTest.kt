@@ -59,8 +59,8 @@ class AppStateTest {
     }
 
     @Test
-    fun touchGateDelayIsOneSecond() {
-        assertEquals(1_000L, TOUCH_GATE_DELAY_MS)
+    fun touchGateDelayIs600Milliseconds() {
+        assertEquals(600L, TOUCH_GATE_DELAY_MS)
     }
 
     @Test

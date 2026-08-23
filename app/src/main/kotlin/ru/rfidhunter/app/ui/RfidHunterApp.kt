@@ -929,28 +929,30 @@ private fun SearchScreen(
             Text("Ищем", fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
         Box(Modifier.fillMaxWidth().height(78.dp), contentAlignment = Alignment.Center) {
-            Text(
-                item.name,
-                modifier = Modifier.fillMaxWidth(),
-                color = Color(0xFF1565C0),
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Bold,
-                lineHeight = 36.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
+            // Match the item-card title treatment and size so the selected
+            // thing remains equally legible while searching.
+            ThingName(item.name, fontSize = 30.sp)
         }
         Column(
             Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            SearchItemPhoto(item)
-            Spacer(Modifier.height(12.dp))
-            LinearSignalMeter(
-                animatedVisualStrength,
-                Modifier.fillMaxWidth().height(96.dp),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // The search photo is intentionally a little larger than the
+                // card preview. The vertical meter uses the otherwise-unused
+                // space beside it instead of shrinking the photo into a wide
+                // horizontal slot.
+                SearchItemPhoto(item, width = 200.dp)
+                Spacer(Modifier.width(12.dp))
+                LinearSignalMeter(
+                    animatedVisualStrength,
+                    Modifier.width(112.dp).height(267.dp),
+                )
+            }
             Spacer(Modifier.height(12.dp))
             SignalReadout(animatedVisualStrength, rssi)
         }
@@ -1015,13 +1017,13 @@ private fun SignalReadout(animatedStrength: Float, rssi: Int?) {
 }
 
 @Composable
-private fun SearchItemPhoto(item: Item) {
+private fun SearchItemPhoto(item: Item, width: androidx.compose.ui.unit.Dp = 160.dp) {
     val bitmap = remember(item.photoPath) {
         item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
     }
     Box(
         Modifier
-            .width(160.dp)
+            .width(width)
             .aspectRatio(3f / 4f)
             .clip(RoundedCornerShape(14.dp))
             .background(Color(0xFFE0E0E0)),
@@ -1038,34 +1040,34 @@ private fun SearchItemPhoto(item: Item) {
 @Composable
 private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
     Canvas(modifier) {
-        val left = size.width * 0.035f
-        val right = size.width * 0.965f
-        val trackTop = size.height * 0.12f
-        val trackHeight = size.height * 0.46f
-        val trackWidth = right - left
-        val cornerRadius = trackHeight / 2f
-        val fillWidth = trackWidth * signalStrength.coerceIn(0f, 1f)
+        val barWidth = size.width * 0.34f
+        val barLeft = size.width * 0.58f - barWidth / 2f
+        val barTop = size.height * 0.08f
+        val barBottom = size.height * 0.82f
+        val barHeight = barBottom - barTop
+        val cornerRadius = barWidth / 2f
+        val fillHeight = barHeight * signalStrength.coerceIn(0f, 1f)
 
         drawRoundRect(
             color = Color(0xFFCFD8DC),
-            topLeft = androidx.compose.ui.geometry.Offset(left, trackTop),
-            size = androidx.compose.ui.geometry.Size(trackWidth, trackHeight),
+            topLeft = androidx.compose.ui.geometry.Offset(barLeft, barTop),
+            size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
         )
-        if (fillWidth > 0f) {
+        if (fillHeight > 0f) {
             drawRoundRect(
                 color = signalColor(signalStrength),
-                topLeft = androidx.compose.ui.geometry.Offset(left, trackTop),
-                size = androidx.compose.ui.geometry.Size(fillWidth, trackHeight),
+                topLeft = androidx.compose.ui.geometry.Offset(barLeft, barBottom - fillHeight),
+                size = androidx.compose.ui.geometry.Size(barWidth, fillHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
             )
         }
         repeat(5) { index ->
-            val x = left + trackWidth * index / 4f
+            val y = barBottom - barHeight * index / 4f
             drawLine(
                 color = Color.White.copy(alpha = 0.8f),
-                start = androidx.compose.ui.geometry.Offset(x, trackTop + trackHeight * 0.2f),
-                end = androidx.compose.ui.geometry.Offset(x, trackTop + trackHeight * 0.8f),
+                start = androidx.compose.ui.geometry.Offset(barLeft, y),
+                end = androidx.compose.ui.geometry.Offset(barLeft + barWidth, y),
                 strokeWidth = 4f,
             )
         }
@@ -1073,11 +1075,15 @@ private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifi
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.rgb(38, 50, 56)
             textAlign = android.graphics.Paint.Align.CENTER
-            textSize = (size.height * 0.20f).coerceIn(28f, 50f)
+            textSize = (size.width * 0.20f).coerceIn(30f, 52f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
-        listOf(left to "0", (left + right) / 2f to "50", right to "100").forEach { (x, label) ->
-            drawContext.canvas.nativeCanvas.drawText(label, x, size.height * 0.94f, labelPaint)
+        listOf(
+            barBottom to "0",
+            (barTop + barBottom) / 2f to "50",
+            barTop to "100",
+        ).forEach { (y, label) ->
+            drawContext.canvas.nativeCanvas.drawText(label, size.width * 0.16f, y + labelPaint.textSize * 0.35f, labelPaint)
         }
     }
 }
