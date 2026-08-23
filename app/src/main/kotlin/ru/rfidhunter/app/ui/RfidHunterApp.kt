@@ -19,12 +19,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,17 +39,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material3.Button as MaterialButton
+import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedButton as MaterialOutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextButton as MaterialTextButton
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -72,6 +73,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -83,6 +86,7 @@ import kotlinx.coroutines.flow.collect
 import ru.rfidhunter.app.domain.ConnectionState
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.Item
+import ru.rfidhunter.app.domain.ReaderScanState
 import ru.rfidhunter.app.voice.OfflinePromptPlayer
 import ru.rfidhunter.app.voice.VoiceBackend
 import java.io.File
@@ -101,6 +105,11 @@ fun RfidHunterApp(
     val state by viewModel.state.collectAsState()
     val items by viewModel.items.collectAsState()
     val connection by viewModel.connectionState.collectAsState()
+    val readerScanState by viewModel.readerScanState.collectAsState()
+    val discoveredDevices by viewModel.discoveredDevices.collectAsState()
+    val readerDiagnostic by viewModel.readerDiagnostic.collectAsState()
+    val readerReady by viewModel.readerReady.collectAsState()
+    val recentReads by viewModel.recentReads.collectAsState()
     val voiceBackend by viewModel.voiceBackend.collectAsState()
     var announcement by remember { mutableStateOf("") }
     var announcementKey by remember { mutableStateOf("") }
@@ -145,12 +154,13 @@ fun RfidHunterApp(
     MaterialTheme(typography = roomyTypography) {
         Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
             Column(Modifier.fillMaxSize()) {
-                if (announcement.isNotBlank()) {
+                val hideConnectionAnnouncement = state == AppState.Idle && readerReady && connection == ConnectionState.CONNECTED
+                if (announcement.isNotBlank() && !hideConnectionAnnouncement) {
                     Text(announcement, modifier = Modifier.fillMaxWidth().background(Color(0xFFE8F5E9)).padding(16.dp), fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
                 }
                 Box(Modifier.weight(1f)) {
                     when (val current = state) {
-                        AppState.Idle -> IdleScreen(viewModel, connection, items)
+                        AppState.Idle -> IdleScreen(viewModel, connection, readerScanState, readerReady, readerDiagnostic, items)
                         AppState.InitialChecking -> StatusScreen("Проверяю метку…")
                         is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem), voiceBackend, viewModel::openCatalog)
                         is AppState.Camera -> CameraScreen(current, viewModel, cameraPermission, requestCameraPermission)
@@ -166,8 +176,13 @@ fun RfidHunterApp(
                         is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
                         is AppState.Catalog -> CatalogScreen(current, items, viewModel)
                         is AppState.MultipleTags -> MessageScreen(current.message, viewModel::openCatalog)
-                        is AppState.Message -> ConfirmScreen(current.text, { viewModel.confirmMessage(true) }, { viewModel.confirmMessage(false) })
-                        AppState.Service -> ServiceScreen(viewModel)
+                        is AppState.Message -> ConfirmScreen(
+                            text = current.text,
+                            highlightedTitle = current.highlightedTitle,
+                            onConfirm = { viewModel.confirmMessage(true) },
+                            onCancel = { viewModel.confirmMessage(false) },
+                        )
+                        AppState.Service -> ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads)
                         is AppState.Error -> MessageScreen(current.text, viewModel::closeService)
                     }
                 }
@@ -175,6 +190,93 @@ fun RfidHunterApp(
         }
     }
 }
+
+/**
+ * All ordinary buttons go through the same forgiving touch target: the
+ * initial pointer decides the button, small movement does not cancel it, a
+ * second finger is ignored, and accidental double activation is debounced.
+ */
+@Composable
+private fun Button(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    colors: ButtonColors = ButtonDefaults.buttonColors(),
+    content: @Composable RowScope.() -> Unit,
+) {
+    MaterialButton(
+        onClick = {},
+        modifier = modifier.resilientButtonInput(onClick, enabled),
+        enabled = enabled,
+        colors = colors,
+        content = content,
+    )
+}
+
+@Composable
+private fun OutlinedButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    MaterialOutlinedButton(
+        onClick = {},
+        modifier = modifier.resilientButtonInput(onClick, enabled),
+        enabled = enabled,
+        content = content,
+    )
+}
+
+@Composable
+private fun TextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    MaterialTextButton(
+        onClick = {},
+        modifier = modifier.resilientButtonInput(onClick, enabled),
+        enabled = enabled,
+        content = content,
+    )
+}
+
+private fun Modifier.resilientButtonInput(onClick: () -> Unit, enabled: Boolean): Modifier =
+    pointerInput(enabled) {
+        awaitPointerEventScope {
+            var lastActionAt = 0L
+            while (true) {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                down.consume()
+                var multiTouch = false
+                while (true) {
+                    val event = awaitPointerEvent()
+                    event.changes
+                        .filter { it.id != down.id && it.pressed }
+                        .forEach {
+                            multiTouch = true
+                            it.consume()
+                        }
+                    val primary = event.changes.firstOrNull { it.id == down.id }
+                    primary?.consume()
+                    if (primary?.pressed == false || primary == null) break
+                }
+                val now = System.currentTimeMillis()
+                if (enabled && !multiTouch && now - lastActionAt >= 500L) {
+                    lastActionAt = now
+                    onClick()
+                }
+            }
+        }
+    }.semantics {
+        onClick {
+            if (!enabled) return@onClick false
+            onClick()
+            true
+        }
+    }
 
 private fun Typography.withRoomyLineHeight(): Typography = copy(
     displayLarge = displayLarge.copy(lineHeight = 1.28.em),
@@ -211,22 +313,46 @@ private fun feedbackKey(state: AppState): String = when (state) {
     is AppState.PhotoReview -> "photo-review"
     is AppState.WaitForNewTag -> "wait-tag"
     is AppState.MultipleTags -> "multiple"
-    is AppState.Message -> "message"
+    is AppState.Message -> "message-${state.highlightedTitle ?: state.text}"
     is AppState.Error -> "error"
     AppState.AskSearchCommand -> "ask-search"
 }
 
 @Composable
-private fun IdleScreen(viewModel: MainViewModel, connection: ConnectionState, items: List<Item>) {
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically)) {
+private fun IdleScreen(
+    viewModel: MainViewModel,
+    connection: ConnectionState,
+    scanState: ReaderScanState,
+    readerReady: Boolean,
+    diagnostic: String?,
+    items: List<Item>,
+) {
+    val connectionInProgress = connection == ConnectionState.CONNECTING ||
+        scanState == ReaderScanState.SCANNING ||
+        (connection == ConnectionState.CONNECTED && !readerReady)
+    val showInstruction = !connectionInProgress && (readerReady || viewModel.fakeGateway != null)
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceEvenly,
+    ) {
         Text("Искатель вещей", fontSize = 34.sp, fontWeight = FontWeight.Bold)
-        Text(when (connection) {
-            ConnectionState.CONNECTED -> "Считыватель подключён"
-            ConnectionState.CONNECTING -> "Подключаю считыватель…"
-            ConnectionState.ERROR -> "Ошибка считывателя"
-            ConnectionState.DISCONNECTED -> "Демо-режим без считывателя"
-        }, fontSize = 18.sp)
-        Text("Нажмите курок, чтобы проверить метку", fontSize = 24.sp, textAlign = TextAlign.Center)
+        val readerStatus = when {
+            connection == ConnectionState.CONNECTING -> "Подключаю считыватель…"
+            connection == ConnectionState.ERROR -> "Не удалось подключиться"
+            scanState == ReaderScanState.SCANNING -> "Ищу считыватель рядом…"
+            scanState == ReaderScanState.COMPLETE && diagnostic?.contains("Найдено устройств: 0") == true -> "Считыватель не найден"
+            scanState == ReaderScanState.COMPLETE && diagnostic?.startsWith("Найдено устройств:") == true -> "Найдено несколько устройств"
+            connection == ConnectionState.CONNECTED -> "Готовлю считыватель…"
+            viewModel.fakeGateway != null -> "Демо-режим без считывателя"
+            else -> "Считыватель отключён"
+        }
+        if (readerStatus.isNotBlank() && !readerReady) {
+            Text(readerStatus, fontSize = 20.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+        }
+        if (showInstruction) {
+            Text("Нажмите курок чтобы проверить метку или начать поиск", fontSize = 24.sp, textAlign = TextAlign.Center)
+        }
         if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(96.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
         Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(96.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
         OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(96.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
@@ -238,15 +364,28 @@ private fun IdleScreen(viewModel: MainViewModel, connection: ConnectionState, it
 
 @Composable
 private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceBackend, onOpenCatalog: () -> Unit) {
+    val isNewTag = state.mode == VoiceInputMode.ADD &&
+        state.pendingEpc != null &&
+        state.renameItem == null
     val prompt = state.instruction
-        ?: if (state.mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?"
+        ?: when {
+            isNewTag -> "Метка считана, но её ещё нет в каталоге"
+            state.mode == VoiceInputMode.SEARCH -> "Скажите, что найти?"
+            else -> "Скажите, как назвать вещь?"
+        }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         if (!state.isProcessing) {
-            if (state.missingSearchQuery != null) {
+            if (isNewTag) {
+                Text("Добавляем новую вещь", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(12.dp))
+                Text(prompt, fontSize = 28.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(12.dp))
+                Text("Скажите, как ее назвать?", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            } else if (state.missingSearchQuery != null) {
                 Text("В каталоге отсутствует", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(10.dp))
                 Text(
@@ -385,20 +524,28 @@ private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, o
 
 private fun Modifier.resilientReviewInput(onRedo: () -> Unit, onDone: () -> Unit): Modifier = pointerInput(Unit) {
     awaitPointerEventScope {
-        var lastActionAt = 0L
-        while (true) {
-            val down = awaitFirstDown(false)
-            val action = when { down.position.y < size.height * .28f -> onRedo; down.position.y > size.height * .72f -> onDone; else -> null }
+            var lastActionAt = 0L
             while (true) {
-                val pointer = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
-                pointer?.consume()
-                if (pointer?.pressed == false || pointer == null) break
+                val down = awaitFirstDown(false)
+                val action = when { down.position.y < size.height * .28f -> onRedo; down.position.y > size.height * .72f -> onDone; else -> null }
+                var multiTouch = false
+                while (true) {
+                    val event = awaitPointerEvent()
+                    event.changes
+                        .filter { it.id != down.id && it.pressed }
+                        .forEach {
+                            multiTouch = true
+                            it.consume()
+                        }
+                    val pointer = event.changes.firstOrNull { it.id == down.id }
+                    pointer?.consume()
+                    if (pointer?.pressed == false || pointer == null) break
+                }
+                val now = System.currentTimeMillis()
+                if (action != null && !multiTouch && now - lastActionAt >= 500) { lastActionAt = now; action() }
             }
-            val now = System.currentTimeMillis()
-            if (action != null && now - lastActionAt >= 500) { lastActionAt = now; action() }
         }
     }
-}
 
 @Composable private fun ReviewZone(label: String, color: Color, modifier: Modifier) = Box(modifier.fillMaxWidth().background(color), Alignment.Center) { Text(label, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
 
@@ -427,7 +574,11 @@ private fun HoldTriggerButton(onStart: () -> Unit, onStop: () -> Unit) {
             while (true) {
                 val down = awaitFirstDown(false); down.consume(); onStart()
                 while (true) {
-                    val pointer = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                    val event = awaitPointerEvent()
+                    event.changes
+                        .filter { it.id != down.id && it.pressed }
+                        .forEach { it.consume() }
+                    val pointer = event.changes.firstOrNull { it.id == down.id }
                     pointer?.consume()
                     if (pointer?.pressed == false || pointer == null) break
                 }
@@ -504,7 +655,10 @@ private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel:
             Box(Modifier.weight(1f)) {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
                     itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
-                        Card(Modifier.fillMaxWidth().height(140.dp).clickable { viewModel.selectCatalogItem(item) }, colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) Color(0xFFE3F2FD) else Color.White)) {
+                        Card(
+                            Modifier.fillMaxWidth().height(140.dp).resilientButtonInput({ viewModel.selectCatalogItem(item) }, enabled = true),
+                            colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) Color(0xFFE3F2FD) else Color.White),
+                        ) {
                             ItemPreview(item, false, Modifier.padding(10.dp))
                         }
                     }
@@ -532,10 +686,53 @@ private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifie
 }
 
 @Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Button(onNext, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОНЯТНО", fontSize = 20.sp) } } }
-@Composable private fun ConfirmScreen(text: String, onConfirm: () -> Unit, onCancel: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Button(onConfirm, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОДТВЕРДИТЬ", fontSize = 20.sp) }; OutlinedButton(onCancel, Modifier.fillMaxWidth().height(60.dp)) { Text("ОТМЕНА", fontSize = 20.sp) } } }
+@Composable
+private fun ConfirmScreen(
+    text: String,
+    highlightedTitle: String?,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Text(text, fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        if (!highlightedTitle.isNullOrBlank()) {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                highlightedTitle,
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = 38.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFFC62828),
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(32.dp))
+        Button(
+            onConfirm,
+            Modifier.fillMaxWidth().height(96.dp),
+        ) { Text("ПОДТВЕРДИТЬ", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onCancel,
+            Modifier.fillMaxWidth().height(96.dp),
+        ) { Text("ОТМЕНА", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
+    }
+}
 
 @Composable
-private fun ServiceScreen(viewModel: MainViewModel) {
+private fun ServiceScreen(
+    viewModel: MainViewModel,
+    connection: ConnectionState,
+    scanState: ReaderScanState,
+    devices: List<ru.rfidhunter.app.domain.RfidDevice>,
+    diagnostic: String?,
+    readerReady: Boolean,
+    recentReads: List<ru.rfidhunter.app.domain.TagRead>,
+) {
     val fake = viewModel.fakeGateway
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
@@ -543,7 +740,36 @@ private fun ServiceScreen(viewModel: MainViewModel) {
     var recordings by remember { mutableStateOf(viewModel.diagnosticRecordings()) }
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
-        Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL"}")
+        Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL IH25"}")
+        Text("Состояние: ${when {
+            scanState == ReaderScanState.SCANNING -> "сканирую"
+            connection == ConnectionState.CONNECTING -> "подключаюсь"
+            connection == ConnectionState.ERROR -> "ошибка"
+            readerReady -> "готов"
+            connection == ConnectionState.CONNECTED -> "создаю reader"
+            else -> "отключён"
+        }}")
+        diagnostic?.takeIf { it.isNotBlank() }?.let { Text("Диагностика: $it") }
+        Button(viewModel::scanReaders, Modifier.fillMaxWidth(), enabled = scanState != ReaderScanState.SCANNING) {
+            if (scanState == ReaderScanState.SCANNING) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Сканирую IH25…")
+            } else Text("Сканировать IH25")
+        }
+        if (devices.isNotEmpty()) {
+            Text("Найдено устройств: ${devices.size}", fontWeight = FontWeight.Bold)
+            devices.forEach { device ->
+                val selected = viewModel.readerAddress().equals(device.macAddress, true)
+                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (selected) Color(0xFFE8F5E9) else Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(device.name + if (device.likelyHoneywell) " (IH25?)" else "", fontWeight = FontWeight.Bold)
+                        Text("${device.macAddress}   RSSI ${device.rssi} dBm")
+                        Button({ viewModel.selectReader(device); readerAddress = device.macAddress }, enabled = !selected) { Text(if (selected) "Выбрано" else "Выбрать") }
+                    }
+                }
+            }
+        }
         Text("Движок: ${viewModel.currentVoiceBackend()}")
         Text("Whisper model: ${viewModel.currentWhisperVariant()}")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -566,7 +792,20 @@ private fun ServiceScreen(viewModel: MainViewModel) {
             OutlinedButton({ viewModel.setVoiceBackend(VoiceBackend.VOSK) }) { Text("Vosk") }
         }
         OutlinedTextField(readerAddress, { readerAddress = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Bluetooth MAC считывателя") })
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { OutlinedButton({ viewModel.setReaderAddress(readerAddress); viewModel.simulateConnect() }) { Text("connect") }; OutlinedButton(viewModel::simulateDisconnect) { Text("disconnect") }; OutlinedButton(viewModel::simulateTriggerPress) { Text("trigger") } }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton({ viewModel.setReaderAddress(readerAddress); viewModel.simulateConnect() }) { Text("Подключить") }
+            OutlinedButton(viewModel::simulateDisconnect) { Text("Отключить") }
+            if (fake != null) OutlinedButton(viewModel::simulateTriggerPress) { Text("trigger") }
+        }
+        Button(
+            onClick = { viewModel.startDiagnosticInventory() },
+            enabled = fake != null || readerReady,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Проверить метки (5 секунд)") }
+        if (recentReads.isNotEmpty()) {
+            Text("Последние EPC: ${recentReads.size}", fontWeight = FontWeight.Bold)
+            recentReads.takeLast(8).forEach { read -> Text("${read.epc}   RSSI ${read.rssi}") }
+        }
         Text("Сценарий первичного чтения:")
         FakeScenario.values().forEach { scenario -> OutlinedButton({ viewModel.setFakeScenario(scenario) }, Modifier.fillMaxWidth()) { Text(scenario.name) } }
         Text("Тест голосовой команды", fontSize = 16.sp, fontWeight = FontWeight.Bold)

@@ -59,7 +59,12 @@ sealed interface AppState {
     data class ItemCard(val item: Item) : AppState
     data class Catalog(val selectedIndex: Int = 0) : AppState
     data class MultipleTags(val message: String = "Найдено несколько меток") : AppState
-    data class Message(val text: String, val returnTo: AppState = Idle) : AppState
+    data class Message(
+        val text: String,
+        val returnTo: AppState = Idle,
+        /** Optional title rendered separately for destructive confirmations. */
+        val highlightedTitle: String? = null,
+    ) : AppState
     data object Service : AppState
     data class Error(val text: String) : AppState
 }

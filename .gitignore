@@ -1,6 +1,7 @@
 Honeywell_RFID_SDK_v0.5.0
 .tools
 .gradle
+.kotlin
 build
 **/build
 **/.cxx

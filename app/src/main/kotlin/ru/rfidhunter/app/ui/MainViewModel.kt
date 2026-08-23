@@ -16,13 +16,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.domain.ConnectionState
+import ru.rfidhunter.app.domain.ReaderScanState
+import ru.rfidhunter.app.domain.RfidDevice
 import ru.rfidhunter.app.domain.moveCatalogIndex
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.InactivityPolicy
 import ru.rfidhunter.app.domain.InventoryConfig
+import ru.rfidhunter.app.domain.InitialRfidDecision
 import ru.rfidhunter.app.domain.Item
+import ru.rfidhunter.app.domain.decideInitialTag
 import ru.rfidhunter.app.domain.SearchPowerPolicy
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
@@ -82,6 +87,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var lastActivityAt = System.currentTimeMillis()
 
     val connectionState: StateFlow<ConnectionState> = gateway.connectionState
+    val discoveredDevices: StateFlow<List<RfidDevice>> = gateway.discoveredDevices
+    val readerScanState: StateFlow<ReaderScanState> = gateway.scanState
+    val readerDiagnostic: StateFlow<String?> = gateway.diagnosticMessage
+    val readerReady: StateFlow<Boolean> = gateway.readerReady
+    private val _recentReads = MutableStateFlow<List<TagRead>>(emptyList())
+    val recentReads: StateFlow<List<TagRead>> = _recentReads.asStateFlow()
+    private var scanJob: Job? = null
+    private var automaticSetupJob: Job? = null
 
     init {
         viewModelScope.launch { repository.seedIfEmpty() }
@@ -94,6 +107,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             gateway.tagReads.collectLatest {
+                val merged = LinkedHashMap<String, TagRead>()
+                (_recentReads.value + it).forEach { read ->
+                    val key = read.epc.uppercase()
+                    val previous = merged[key]
+                    if (previous == null || (read.rssi != 0 && (previous.rssi == 0 || read.rssi > previous.rssi))) {
+                        merged[key] = read
+                    }
+                }
+                _recentReads.value = merged.values.toList().takeLast(64)
                 if (captureReads) synchronized(readBuffer) { readBuffer += it }
             }
         }
@@ -115,13 +137,168 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectReader() = viewModelScope.launch {
         markActivity()
-        gateway.connect()
         emitEvent("Подключаю считыватель")
+        gateway.connect()
+    }
+
+    /** Start a five-second BLE scan; selecting a row persists its MAC. */
+    fun scanReaders(timeoutMs: Long = 5_000L) {
+        if (scanJob?.isActive == true) return
+        markActivity()
+        scanJob = viewModelScope.launch {
+            try {
+                gateway.scanDevices(timeoutMs)
+            } catch (error: Throwable) {
+                emitEvent("Сканирование не удалось: ${error.message ?: error.javaClass.simpleName}")
+            }
+        }.also { job -> job.invokeOnCompletion { if (scanJob === job) scanJob = null } }
+    }
+
+    fun selectReader(device: RfidDevice) {
+        markActivity()
+        gateway.readerAddress = device.macAddress
+        emitEvent("Выбран ${device.name} (${device.macAddress})")
+    }
+
+    /**
+     * Hands-off startup flow for the single-user device: scan nearby BLE
+     * devices immediately, prefer a saved reader when it is visible, and
+     * automatically connect an unambiguous IH25.
+     */
+    fun startAutomaticReaderSetup() {
+        if (fakeGateway != null || automaticSetupJob?.isActive == true) return
+        if (readerReady.value && connectionState.value == ConnectionState.CONNECTED) return
+        automaticSetupJob = viewModelScope.launch {
+            markActivity()
+            val savedAddress = gateway.readerAddress
+            val startupDevices = runCatching { gateway.scanDevices(5_000L) }.getOrElse {
+                emitEvent("Не удалось найти считыватель")
+                return@launch
+            }
+            val startupLikely = startupDevices.filter { it.likelyHoneywell }
+            val savedCandidate = savedAddress.takeIf { it.isNotBlank() }
+                ?.let { address -> startupDevices.firstOrNull { it.macAddress.equals(address, ignoreCase = true) } }
+            val startupCandidateOrNull = when {
+                savedCandidate != null -> savedCandidate
+                savedAddress.isNotBlank() -> RfidDevice("Saved IH25", savedAddress, 0, true)
+                startupLikely.size == 1 -> startupLikely.single()
+                startupLikely.isEmpty() && startupDevices.size == 1 -> startupDevices.single()
+                else -> null
+            }
+            if (startupCandidateOrNull == null) {
+                if (startupLikely.size > 1 || startupDevices.size > 1) {
+                    emitEvent("Рядом несколько устройств. Откройте сервис для выбора считывателя")
+                } else {
+                    emitEvent("Считыватель не найден. Включите IH25 и поднесите его ближе")
+                }
+                return@launch
+            }
+            val startupCandidate = startupCandidateOrNull ?: return@launch
+            gateway.readerAddress = startupCandidate.macAddress
+            emitEvent("Найден ${startupCandidate.name}. Подключаю")
+            gateway.connect()
+            // Reader creation can take tens of seconds on a cold IH25
+            // session. Keep the simple main-screen status alive while it
+            // completes, then surface a recoverable error instead of hanging.
+            var ready = withTimeoutOrNull(30_000L) {
+                while (!readerReady.value) delay(100)
+                readerReady.value
+            } == true
+            if (!ready && !readerReady.value) {
+                runCatching { gateway.disconnect() }
+                emitEvent("Считыватель не ответил. Повторите запуск")
+            }
+            if (!ready && !readerReady.value) {
+                delay(500)
+                emitEvent("Повторяю подключение")
+                gateway.connect()
+                ready = withTimeoutOrNull(30_000L) {
+                    while (!readerReady.value) delay(100)
+                    readerReady.value
+                } == true
+            }
+            return@launch
+
+    // Legacy flow removed; startup scans first.
+    /*
+            // net for source compatibility; the hands-off path above always
+            // returns after the immediate scan decision.
+            if (false) {
+            if (savedAddress.isNotBlank() && connectionState.value == ConnectionState.DISCONNECTED) {
+                emitEvent("Подключаю сохранённый считыватель")
+                gateway.connect()
+                // IH25 firmware setup can take 20+ seconds after a cold
+                // Bluetooth session. Do not disconnect while createReader is
+                // still programming the module.
+                val ready = withTimeoutOrNull(30_000L) {
+                    while (!readerReady.value && connectionState.value != ConnectionState.ERROR) delay(100)
+                    readerReady.value
+                } == true
+                if (ready) return@launch
+                runCatching { gateway.disconnect() }
+            }
+
+            val devices = runCatching { gateway.scanDevices(5_000L) }.getOrElse {
+                emitEvent("Не удалось найти считыватель")
+                return@launch
+            }
+            val likely = devices.filter { it.likelyHoneywell }
+            val candidateOrNull = when {
+                savedAddress.isNotBlank() -> devices.firstOrNull { it.macAddress.equals(savedAddress, ignoreCase = true) }
+                likely.size == 1 -> likely.single()
+                likely.isEmpty() && devices.size == 1 -> devices.single()
+                else -> null
+            }
+            if (candidateOrNull == null) {
+                if (likely.size > 1 || devices.size > 1) {
+                    emitEvent("Рядом несколько устройств. Откройте сервис для выбора считывателя")
+                } else {
+                    emitEvent("Считыватель не найден. Включите IH25 и поднесите его ближе")
+                }
+                return@launch
+            }
+            val candidate = candidateOrNull ?: return@launch
+            gateway.readerAddress = candidate.macAddress
+            emitEvent("Найден ${candidate.name}. Подключаю")
+            gateway.connect()
+            }
+    */
+        }.also { job ->
+            job.invokeOnCompletion { if (automaticSetupJob === job) automaticSetupJob = null }
+        }
+    }
+
+    /** Backwards-compatible entry point used by the activity after permissions. */
+    fun autoConnectSavedReader() = startAutomaticReaderSetup()
+
+    fun retryAutomaticReaderSetup() {
+        automaticSetupJob?.cancel()
+        startAutomaticReaderSetup()
     }
 
     fun disconnectReader() = viewModelScope.launch {
         markActivity()
         gateway.disconnect()
+    }
+
+    /** Hardware-only service action used to verify EPC/RSSI reception. */
+    fun startDiagnosticInventory(durationMs: Long = 5_000L) = viewModelScope.launch {
+        if (!readerReady.value) {
+            emitEvent("Считыватель ещё не готов")
+            return@launch
+        }
+        markActivity()
+        _recentReads.value = emptyList()
+        emitEvent("Проверяю метки")
+        try {
+            gateway.startInventory(InventoryConfig(power = searchPowerPolicy.maxPower, durationMs = durationMs))
+            delay(durationMs)
+        } catch (error: Throwable) {
+            emitEvent("Ошибка чтения меток: ${error.message ?: error.javaClass.simpleName}")
+        } finally {
+            runCatching { gateway.stopInventory() }
+            emitEvent("Проверка меток завершена")
+        }
     }
 
     fun onTriggerPressed() {
@@ -167,16 +344,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
             collectInventory(searchPowerPolicy.minPower, 850)
-            val unique = synchronized(readBuffer) { readBuffer.distinctBy { it.epc.uppercase() } }
-            when {
-                unique.isEmpty() -> startVoiceInput(VoiceInputMode.SEARCH)
-                unique.size > 1 -> {
-                    _state.value = AppState.MultipleTags()
-                    emitEvent("Найдено несколько меток. Оставьте одну")
-                }
-                else -> {
-                    val item = repository.getByEpc(unique.first().epc)
-                    if (item == null) startVoiceInput(VoiceInputMode.ADD, pendingEpc = unique.first().epc)
+            val reads = synchronized(readBuffer) { readBuffer.toList() }
+            when (val decision = decideInitialTag(reads)) {
+                InitialRfidDecision.NoTag -> startVoiceInput(VoiceInputMode.SEARCH)
+                InitialRfidDecision.Ambiguous -> startVoiceInput(
+                    VoiceInputMode.SEARCH,
+                    instruction = "Рядом несколько меток. Скажите, какую вещь найти?",
+                )
+                is InitialRfidDecision.Selected -> {
+                    val item = repository.getByEpc(decision.tag.epc)
+                    if (item == null) startVoiceInput(VoiceInputMode.ADD, pendingEpc = decision.tag.epc)
                     else {
                         _state.value = AppState.ItemCard(item)
                         emitEvent("Это ${item.name}. Открыта карточка вещи")
@@ -191,10 +368,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inventoryJob = viewModelScope.launch {
             _state.value = AppState.InitialChecking
             collectInventory(searchPowerPolicy.minPower, 850)
-            val unique = synchronized(readBuffer) { readBuffer.distinctBy { it.epc.uppercase() } }
-            when {
-                unique.size == 1 && repository.getByEpc(unique.first().epc) == null -> {
-                    val newEpc = unique.first().epc
+            val reads = synchronized(readBuffer) { readBuffer.toList() }
+            when (val decision = decideInitialTag(reads)) {
+                is InitialRfidDecision.Selected -> if (repository.getByEpc(decision.tag.epc) == null) {
+                    val newEpc = decision.tag.epc
                     if (replacingItem == null) {
                         repository.insert(name, newEpc, photoPath)
                         _state.value = AppState.Idle
@@ -205,12 +382,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _state.value = AppState.ItemCard(updated)
                         emitEvent("Метка изменена")
                     }
-                }
-                unique.size > 1 -> {
+                } else {
                     _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
-                    emitEvent("Рядом несколько меток. Оставьте одну")
+                    emitEvent("Эта метка уже привязана к другой вещи")
                 }
-                else -> {
+                InitialRfidDecision.Ambiguous -> {
+                    _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
+                    emitEvent("Не удалось выбрать одну метку. Оставьте рядом только новую")
+                }
+                InitialRfidDecision.NoTag -> {
                     _state.value = AppState.WaitForNewTag(name, photoPath, replacingItem)
                     emitEvent("Нужна одна новая метка")
                 }
@@ -340,7 +520,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun delete(item: Item) {
         markActivity()
-        _state.value = AppState.Message("Удалить ${item.name}?", AppState.ItemCard(item))
+        _state.value = AppState.Message(
+            text = "Удалить эту вещь?",
+            returnTo = AppState.ItemCard(item),
+            highlightedTitle = item.name,
+        )
         emitEvent("Удаление требует подтверждения")
     }
 
@@ -445,7 +629,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun openService() { markActivity(); _state.value = AppState.Service }
+    fun openService() {
+        markActivity()
+        voiceJob?.cancel()
+        inventoryJob?.cancel()
+        captureReads = false
+        _state.value = AppState.Service
+    }
     fun closeService() { markActivity(); _state.value = AppState.Idle }
 
     fun setFakeScenario(scenario: FakeScenario) { markActivity(); fakeGateway?.scenario = scenario }
@@ -621,7 +811,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             missingSearchQuery = missingSearchQuery,
             sessionId = ++voiceSessionId,
         )
-        emitEvent(instruction ?: if (mode == VoiceInputMode.SEARCH) "Скажите, что найти?" else "Скажите, как назвать вещь?")
+        emitEvent(
+            instruction ?: when {
+                mode == VoiceInputMode.ADD && pendingEpc != null && renameItem == null ->
+                    "Добавляем новую вещь. Скажите, как ее назвать?"
+                mode == VoiceInputMode.SEARCH -> "Скажите, что найти?"
+                else -> "Скажите, как назвать вещь?"
+            },
+        )
     }
 
     private fun handleRecognizedVoice(input: AppState.VoiceListening, text: String) {
@@ -681,6 +878,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun emitEvent(value: String) { _events.tryEmit(value) }
 
     override fun onCleared() {
+        scanJob?.cancel()
+        automaticSetupJob?.cancel()
         voiceJob?.cancel()
         inventoryJob?.cancel()
         voiceEngine.release()

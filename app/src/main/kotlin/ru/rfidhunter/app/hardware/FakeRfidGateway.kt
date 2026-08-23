@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.StateFlow
 import ru.rfidhunter.app.domain.ConnectionState
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.InventoryConfig
+import ru.rfidhunter.app.domain.ReaderScanState
+import ru.rfidhunter.app.domain.RfidDevice
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
 
@@ -15,10 +17,19 @@ class FakeRfidGateway : RfidGateway {
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     private val _triggerEvents = MutableSharedFlow<TriggerEvent>(extraBufferCapacity = 16)
     private val _tagReads = MutableSharedFlow<TagRead>(extraBufferCapacity = 128)
+    private val _discoveredDevices = MutableStateFlow<List<RfidDevice>>(emptyList())
+    private val _scanState = MutableStateFlow(ReaderScanState.IDLE)
+    private val _diagnosticMessage = MutableStateFlow<String?>(null)
+    private val _readerReady = MutableStateFlow(false)
 
     override val connectionState: StateFlow<ConnectionState> = _connectionState
     override val triggerEvents: SharedFlow<TriggerEvent> = _triggerEvents
     override val tagReads: SharedFlow<TagRead> = _tagReads
+    override val discoveredDevices: StateFlow<List<RfidDevice>> = _discoveredDevices
+    override val scanState: StateFlow<ReaderScanState> = _scanState
+    override val diagnosticMessage: StateFlow<String?> = _diagnosticMessage
+    override val readerReady: StateFlow<Boolean> = _readerReady
+    override var lastInventoryConfig: InventoryConfig? = null
 
     var scenario: FakeScenario = FakeScenario.NONE
     var customTags: List<TagRead> = emptyList()
@@ -29,13 +40,23 @@ class FakeRfidGateway : RfidGateway {
         _connectionState.value = ConnectionState.CONNECTING
         delay(120)
         _connectionState.value = ConnectionState.CONNECTED
+        _readerReady.value = true
     }
 
     override suspend fun disconnect() {
         _connectionState.value = ConnectionState.DISCONNECTED
+        _readerReady.value = false
+    }
+
+    override suspend fun scanDevices(timeoutMs: Long): List<RfidDevice> {
+        _scanState.value = ReaderScanState.SCANNING
+        delay(timeoutMs.coerceIn(0L, 5_000L))
+        _scanState.value = ReaderScanState.COMPLETE
+        return _discoveredDevices.value
     }
 
     override suspend fun startInventory(config: InventoryConfig) {
+        lastInventoryConfig = config
         currentPower = config.power
         val tags = when (scenario) {
             FakeScenario.NONE -> emptyList()

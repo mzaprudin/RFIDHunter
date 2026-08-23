@@ -26,6 +26,7 @@ class MainActivity : ComponentActivity() {
     private var cameraGranted by mutableStateOf(false)
     private var microphoneGranted by mutableStateOf(false)
     private var bluetoothPermissionRequested = false
+    private var notificationPermissionRequested = false
     private var readerServiceStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,15 +36,27 @@ class MainActivity : ComponentActivity() {
             android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            // The API-level methods are the supported equivalent of the window
+            // flags above and make a trigger-launched activity visible on the
+            // lock screen on modern Samsung firmware.
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
         setMaximumVolume()
         startReaderServiceWhenPermitted()
+        val vm: MainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
+        activeViewModel = vm
+        if (blePermissionsReady()) vm.autoConnectSavedReader()
+        if (intent.getBooleanExtra(EXTRA_TRIGGER_ON_START, false)) {
+            intent.removeExtra(EXTRA_TRIGGER_ON_START)
+            vm.onTriggerPressed()
+        }
+        if (intent.getBooleanExtra(EXTRA_OPEN_SERVICE, false)) {
+            intent.removeExtra(EXTRA_OPEN_SERVICE)
+            vm.openService()
+        }
         setContent {
-            val vm: MainViewModel = ViewModelProvider(this@MainActivity)[MainViewModel::class.java]
-            activeViewModel = vm
-            if (intent.getBooleanExtra(EXTRA_TRIGGER_ON_START, false)) {
-                intent.removeExtra(EXTRA_TRIGGER_ON_START)
-                vm.onTriggerPressed()
-            }
             RfidHunterApp(
                 viewModel = vm,
                 cameraPermission = cameraGranted,
@@ -58,6 +71,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         refreshPermissions()
         startReaderServiceWhenPermitted()
+        if (blePermissionsReady()) activeViewModel?.autoConnectSavedReader()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -87,8 +101,23 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_TRIGGER_ON_START, false)) {
+            // Re-apply these flags when the existing Activity receives a
+            // trigger while the display was already asleep. This is important
+            // for SINGLE_TOP delivery, where onCreate/onResume are not called.
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            }
             intent.removeExtra(EXTRA_TRIGGER_ON_START)
             activeViewModel?.onTriggerPressed()
+        }
+        if (intent.getBooleanExtra(EXTRA_OPEN_SERVICE, false)) {
+            intent.removeExtra(EXTRA_OPEN_SERVICE)
+            activeViewModel?.openService()
         }
     }
 
@@ -135,6 +164,13 @@ class MainActivity : ComponentActivity() {
     /** Android 12+ requires runtime Bluetooth permission before a connected-device FGS can start. */
     private fun startReaderServiceWhenPermitted() {
         if (readerServiceStarted) return
+        // The mock flavor does not access Bluetooth and should remain usable
+        // without prompting for platform permissions.
+        if (BuildConfig.FLAVOR != "hardware") {
+            ContextCompat.startForegroundService(this, Intent(this, RfidForegroundService::class.java))
+            readerServiceStarted = true
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val bluetoothReady = hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
                 hasPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -148,15 +184,44 @@ class MainActivity : ComponentActivity() {
                 }
                 return
             }
+        } else if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) && !hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            if (!bluetoothPermissionRequested) {
+                bluetoothPermissionRequested = true
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_LOCATION)
+            }
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            if (!notificationPermissionRequested) {
+                notificationPermissionRequested = true
+                requestPermissions(
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    REQUEST_NOTIFICATIONS,
+                )
+            }
+            return
         }
         ContextCompat.startForegroundService(this, Intent(this, RfidForegroundService::class.java))
         readerServiceStarted = true
     }
 
+    private fun blePermissionsReady(): Boolean = if (BuildConfig.FLAVOR != "hardware") {
+        true
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        hasPermission(Manifest.permission.BLUETOOTH_CONNECT) && hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+    } else {
+        hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
+
     companion object {
         const val EXTRA_TRIGGER_ON_START = "ru.rfidhunter.app.EXTRA_TRIGGER_ON_START"
+        const val EXTRA_OPEN_SERVICE = "ru.rfidhunter.app.EXTRA_OPEN_SERVICE"
         private const val REQUEST_CAMERA = 10
         private const val REQUEST_MIC = 11
         private const val REQUEST_BLUETOOTH = 12
+        private const val REQUEST_LOCATION = 13
+        private const val REQUEST_NOTIFICATIONS = 14
     }
 }

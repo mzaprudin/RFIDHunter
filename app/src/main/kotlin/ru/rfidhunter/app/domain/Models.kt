@@ -14,6 +14,21 @@ data class TagRead(
     val rssi: Int,
 )
 
+/** A Bluetooth reader discovered during the IH25 scan. */
+data class RfidDevice(
+    val name: String,
+    val macAddress: String,
+    val rssi: Int,
+    val likelyHoneywell: Boolean = false,
+)
+
+enum class ReaderScanState {
+    IDLE,
+    SCANNING,
+    COMPLETE,
+    ERROR,
+}
+
 enum class ConnectionState {
     DISCONNECTED,
     CONNECTING,
