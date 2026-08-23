@@ -15,7 +15,7 @@
 считыватель или разбираться в RSSI. После выдачи разрешений приложение само
 сканирует BLE, выбирает однозначный IH25, сохраняет MAC и подключается. На
 главном экране при готовом reader показывается только понятная инструкция:
-«Нажмите курок чтобы проверить метку или начать поиск»; технические статусы
+«Нажмите курок чтобы добавить метку или начать поиск»; технические статусы
 остаются в сервисном режиме.
 
 Главная цепочка по короткому нажатию курка:
@@ -31,6 +31,17 @@
 См. [MainViewModel.kt, обработчики курка и initial check](app/src/main/kotlin/ru/rfidhunter/app/ui/MainViewModel.kt#L316-L448),
 [RfidDecisionEngine.kt](app/src/main/kotlin/ru/rfidhunter/app/domain/RfidDecisionEngine.kt)
 и [SearchPowerPolicy.kt](app/src/main/kotlin/ru/rfidhunter/app/domain/SearchPowerPolicy.kt).
+
+Главный экран закреплён в три зоны в
+[IdleScreen](app/src/main/kotlin/ru/rfidhunter/app/ui/RfidHunterApp.kt#L336-L415):
+заголовок сверху, единый центральный слот статуса/инструкции и группа кнопок
+снизу. Верхний технический banner в `Idle` скрыт, поэтому статус подключения
+не дублируется и не сдвигает текст. Под центральным текстом зарезервировано
+место под GIF-анимацию курка; renderer без внешней библиотеки находится в
+[TriggerGif.kt](app/src/main/kotlin/ru/rfidhunter/app/ui/TriggerGif.kt), а файл
+лежит в `app/src/main/assets/rfid-reader-trigger.gif` (исходник —
+`artifacts/rfid-reader-trigger.gif`). Кнопки главного экрана имеют высоту 88 dp
+и расстояние 10 dp — они остаются крупными, но не разнесены чрезмерно.
 
 ## Автопоиск и подключение IH25
 

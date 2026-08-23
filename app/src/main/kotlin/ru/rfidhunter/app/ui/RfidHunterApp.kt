@@ -166,8 +166,11 @@ fun RfidHunterApp(
     MaterialTheme(typography = roomyTypography) {
         Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
             Column(Modifier.fillMaxSize()) {
+                // Idle has one central status slot of its own. Keeping the
+                // event banner there would duplicate connection text and push
+                // the trigger hint down as the reader changes state.
                 val hideAnnouncement =
-                    (state == AppState.Idle && readerReady && connection == ConnectionState.CONNECTED) ||
+                    state == AppState.Idle ||
                         state is AppState.SearchTarget ||
                         state is AppState.RfidSearch ||
                         state is AppState.SearchPaused
@@ -346,11 +349,13 @@ private fun IdleScreen(
         (connection == ConnectionState.CONNECTED && !readerReady)
     val showInstruction = !connectionInProgress && (readerReady || viewModel.fakeGateway != null)
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+        Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceEvenly,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Искатель вещей", fontSize = 34.sp, fontWeight = FontWeight.Bold)
         val readerStatus = when {
             connection == ConnectionState.CONNECTING -> "Подключаю считыватель…"
             connection == ConnectionState.ERROR -> "Не удалось подключиться"
@@ -361,15 +366,53 @@ private fun IdleScreen(
             viewModel.fakeGateway != null -> "Демо-режим без считывателя"
             else -> "Считыватель отключён"
         }
-        if (readerStatus.isNotBlank() && !readerReady) {
-            Text(readerStatus, fontSize = 20.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+        Text(
+            "Искатель вещей",
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        // Keep one stable central status slot. The old layout rendered a
+        // technical status above the instruction, which made the instruction
+        // jump vertically as connection state changed.
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                if (showInstruction) {
+                    "Нажмите курок чтобы добавить метку или начать поиск"
+                } else {
+                    readerStatus
+                },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
+                fontSize = if (showInstruction) 24.sp else 22.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+            )
+            // Reserve the same space while connecting so the status does not
+            // move when the animation becomes visible after reader setup.
+            Box(
+                modifier = Modifier.fillMaxWidth().height(184.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (showInstruction) {
+                    TriggerGif(
+                        modifier = Modifier.fillMaxWidth().height(176.dp),
+                    )
+                }
+            }
         }
-        if (showInstruction) {
-            Text("Нажмите курок чтобы проверить метку или начать поиск", fontSize = 24.sp, textAlign = TextAlign.Center)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(88.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
+            Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(88.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
+            OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(88.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
         }
-        if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(96.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
-        Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(96.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
-        OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(96.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
         if (viewModel.fakeGateway != null) TextButton(viewModel::openService) { Text("Разработчик: сервис") }
     }
 }
