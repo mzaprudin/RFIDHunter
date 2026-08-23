@@ -12,6 +12,7 @@ import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -30,8 +31,10 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -66,9 +69,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -83,10 +89,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import ru.rfidhunter.app.domain.ConnectionState
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.Item
 import ru.rfidhunter.app.domain.ReaderScanState
+import ru.rfidhunter.app.domain.SearchSignalPolicy
 import ru.rfidhunter.app.voice.OfflinePromptPlayer
 import ru.rfidhunter.app.voice.VoiceBackend
 import java.io.File
@@ -154,8 +163,12 @@ fun RfidHunterApp(
     MaterialTheme(typography = roomyTypography) {
         Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
             Column(Modifier.fillMaxSize()) {
-                val hideConnectionAnnouncement = state == AppState.Idle && readerReady && connection == ConnectionState.CONNECTED
-                if (announcement.isNotBlank() && !hideConnectionAnnouncement) {
+                val hideAnnouncement =
+                    (state == AppState.Idle && readerReady && connection == ConnectionState.CONNECTED) ||
+                        state is AppState.SearchTarget ||
+                        state is AppState.RfidSearch ||
+                        state is AppState.SearchPaused
+                if (announcement.isNotBlank() && !hideAnnouncement) {
                     Text(announcement, modifier = Modifier.fillMaxWidth().background(Color(0xFFE8F5E9)).padding(16.dp), fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
                 }
                 Box(Modifier.weight(1f)) {
@@ -169,7 +182,7 @@ fun RfidHunterApp(
                         is AppState.VoiceListening -> VoiceListeningScreen(current, voiceBackend, viewModel::openCatalog)
                         is AppState.VoiceConfirmation -> VoiceConfirmationScreen(current, viewModel)
                         AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
-                        is AppState.SearchTarget -> SearchTargetScreen(current, viewModel)
+                        is AppState.SearchTarget -> SearchTargetScreen(current)
                         is AppState.RfidSearch -> SearchProgressScreen(current)
                         is AppState.SearchPaused -> SearchPausedScreen(current, viewModel)
                         is AppState.Found -> FoundScreen(current, viewModel)
@@ -559,53 +572,148 @@ private fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainViewM
 }
 
 @Composable
-private fun SearchTargetScreen(state: AppState.SearchTarget, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        ItemDetails(state.item, "Поиск вещи")
-        Text("Удерживайте курок и перемещайте считыватель", fontSize = 24.sp, textAlign = TextAlign.Center)
-        HoldTriggerButton(viewModel::onTriggerPressed, viewModel::onTriggerReleased)
-    }
-}
-
-@Composable
-private fun HoldTriggerButton(onStart: () -> Unit, onStop: () -> Unit) {
-    Box(Modifier.fillMaxWidth().height(82.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFF2E7D32)).pointerInput(Unit) {
-        awaitPointerEventScope {
-            while (true) {
-                val down = awaitFirstDown(false); down.consume(); onStart()
-                while (true) {
-                    val event = awaitPointerEvent()
-                    event.changes
-                        .filter { it.id != down.id && it.pressed }
-                        .forEach { it.consume() }
-                    val pointer = event.changes.firstOrNull { it.id == down.id }
-                    pointer?.consume()
-                    if (pointer?.pressed == false || pointer == null) break
-                }
-                onStop()
-            }
-        }
-    }, Alignment.Center) { Text("УДЕРЖИВАТЬ КУРОК", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+private fun SearchTargetScreen(state: AppState.SearchTarget) {
+    SearchScreen(
+        item = state.item,
+        signalStrength = 0f,
+        signalText = "Готов к поиску",
+        instruction = "Нажмите и удерживайте курок",
+    )
 }
 
 @Composable
 private fun SearchProgressScreen(state: AppState.RfidSearch) {
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        ItemDetails(state.item, "Ищем")
-        Text("Мощность: ${state.power}", fontSize = 22.sp)
-        Text("Отпустите курок, когда увидите вещь", fontSize = 23.sp, textAlign = TextAlign.Center)
-    }
+    GeigerClickFeedback(state.signalStrength)
+    SearchScreen(
+        item = state.item,
+        signalStrength = state.signalStrength,
+        signalText = signalDescription(state.signalStrength),
+        instruction = "Перемещайте считыватель. Щелчки участятся рядом с вещью",
+    )
 }
 
 @Composable
 private fun SearchPausedScreen(state: AppState.SearchPaused, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        ItemDetails(state.item, "Поиск приостановлен")
-        Text(if (state.lastDetection) "Метка подавала сигнал" else "Сигнал пока не зафиксирован", fontSize = 22.sp, textAlign = TextAlign.Center)
-        Text("Коротко нажмите курок для новой проверки. Удерживайте 1 секунду, чтобы продолжить поиск.", fontSize = 22.sp, textAlign = TextAlign.Center)
-        Button(viewModel::finishSearch, Modifier.fillMaxWidth().height(74.dp)) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
-        HoldTriggerButton(viewModel::onTriggerPressed, viewModel::onTriggerReleased)
+    SearchScreen(
+        item = state.item,
+        signalStrength = state.signalStrength,
+        signalText = if (state.lastDetection) signalDescription(state.signalStrength) else "Сигнал пока не найден",
+        instruction = "Удерживайте курок 1 секунду, чтобы продолжить поиск",
+        onFinish = viewModel::finishSearch,
+    )
+}
+
+@Composable
+private fun SearchScreen(
+    item: Item,
+    signalStrength: Float,
+    signalText: String,
+    instruction: String,
+    onFinish: (() -> Unit)? = null,
+) {
+    Column(
+        Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 20.dp, vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Ищем", modifier = Modifier.fillMaxWidth(), fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(item.name, modifier = Modifier.fillMaxWidth(), fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0), textAlign = TextAlign.Center)
+        AnalogSignalMeter(
+            signalStrength,
+            Modifier.fillMaxWidth().weight(1f).heightIn(min = 230.dp, max = 390.dp),
+        )
+        Text(
+            signalText,
+            modifier = Modifier.fillMaxWidth(),
+            fontSize = 27.sp,
+            fontWeight = FontWeight.Bold,
+            color = signalColor(signalStrength),
+            textAlign = TextAlign.Center,
+        )
+        Text(instruction, modifier = Modifier.fillMaxWidth(), fontSize = 21.sp, textAlign = TextAlign.Center)
+        if (onFinish != null) {
+            Button(onFinish, Modifier.fillMaxWidth().height(74.dp)) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+        }
     }
+}
+
+@Composable
+private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
+    val animatedStrength by animateFloatAsState(
+        targetValue = signalStrength.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 220),
+        label = "RFID signal needle",
+    )
+    Canvas(modifier) {
+        val strokeWidth = (size.minDimension * 0.055f).coerceAtLeast(14f)
+        val radius = minOf(size.width * 0.43f, size.height * 0.69f)
+        val center = Offset(size.width / 2f, size.height * 0.80f)
+        val arcTopLeft = Offset(center.x - radius, center.y - radius)
+        val arcSize = Size(radius * 2f, radius * 2f)
+        val startAngle = 200f
+        val sweepAngle = 140f
+
+        drawArc(Color(0xFF90A4AE), startAngle, sweepAngle * 0.48f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
+        drawArc(Color(0xFFF9A825), startAngle + sweepAngle * 0.48f, sweepAngle * 0.27f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
+        drawArc(Color(0xFF2E7D32), startAngle + sweepAngle * 0.75f, sweepAngle * 0.25f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
+
+        repeat(11) { index ->
+            val angle = Math.toRadians((startAngle + sweepAngle * index / 10f).toDouble())
+            val outer = Offset(
+                center.x + kotlin.math.cos(angle).toFloat() * (radius + strokeWidth * 0.72f),
+                center.y + kotlin.math.sin(angle).toFloat() * (radius + strokeWidth * 0.72f),
+            )
+            val innerRadius = radius - if (index % 5 == 0) strokeWidth * 1.05f else strokeWidth * 0.62f
+            val inner = Offset(
+                center.x + kotlin.math.cos(angle).toFloat() * innerRadius,
+                center.y + kotlin.math.sin(angle).toFloat() * innerRadius,
+            )
+            drawLine(Color(0xFF263238), inner, outer, strokeWidth = if (index % 5 == 0) 5f else 3f, cap = StrokeCap.Round)
+        }
+
+        val needleAngle = Math.toRadians((startAngle + sweepAngle * animatedStrength).toDouble())
+        val needleEnd = Offset(
+            center.x + kotlin.math.cos(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
+            center.y + kotlin.math.sin(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
+        )
+        drawLine(Color(0xFFC62828), center, needleEnd, strokeWidth = 10f, cap = StrokeCap.Round)
+        drawCircle(Color(0xFF263238), radius = 18f, center = center)
+        drawCircle(Color(0xFFF7F7F2), radius = 7f, center = center)
+    }
+}
+
+@Composable
+private fun GeigerClickFeedback(signalStrength: Float) {
+    val context = LocalContext.current
+    val player = remember(context) { GeigerClickPlayer(context.applicationContext) }
+    val policy = remember { SearchSignalPolicy() }
+    val latestStrength by rememberUpdatedState(signalStrength)
+    DisposableEffect(player) { onDispose { player.release() } }
+    LaunchedEffect(player) {
+        while (isActive) {
+            val strength = latestStrength
+            if (strength <= 0f) {
+                delay(80L)
+            } else {
+                player.play()
+                delay(policy.clickIntervalMs(strength))
+            }
+        }
+    }
+}
+
+private fun signalDescription(strength: Float): String = when {
+    strength <= 0f -> "Сигнала нет"
+    strength < 0.35f -> "Слабый сигнал"
+    strength < 0.70f -> "Сигнал усиливается"
+    else -> "Метка близко"
+}
+
+private fun signalColor(strength: Float): Color = when {
+    strength <= 0f -> Color(0xFF546E7A)
+    strength < 0.35f -> Color(0xFF546E7A)
+    strength < 0.70f -> Color(0xFFE65100)
+    else -> Color(0xFF2E7D32)
 }
 
 @Composable

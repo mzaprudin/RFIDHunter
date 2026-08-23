@@ -29,6 +29,7 @@ import ru.rfidhunter.app.domain.InitialRfidDecision
 import ru.rfidhunter.app.domain.Item
 import ru.rfidhunter.app.domain.decideInitialTag
 import ru.rfidhunter.app.domain.SearchPowerPolicy
+import ru.rfidhunter.app.domain.SearchSignalPolicy
 import ru.rfidhunter.app.domain.TagRead
 import ru.rfidhunter.app.domain.TriggerEvent
 import ru.rfidhunter.app.domain.TriggerGesture
@@ -81,6 +82,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var photoCaptureInProgress = false
     private val readBuffer = mutableListOf<TagRead>()
     private val searchPowerPolicy = SearchPowerPolicy()
+    private val searchSignalPolicy = SearchSignalPolicy()
     private val triggerGestureClassifier = TriggerGestureClassifier(1_000)
     private var triggerPressedAt = 0L
     private val inactivityPolicy = InactivityPolicy()
@@ -334,8 +336,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         inventoryJob?.cancel()
         inventoryJob = null
         captureReads = false
-        val detected = synchronized(readBuffer) { readBuffer.any { it.epc.equals(current.item.epc, true) } }
-        _state.value = AppState.SearchPaused(current.item, current.power, detected)
+        val detected = current.rssi != null
+        _state.value = AppState.SearchPaused(
+            current.item,
+            current.power,
+            detected,
+            current.rssi,
+            current.signalStrength,
+        )
         emitEvent("Поиск приостановлен. Удерживайте курок для продолжения")
     }
 
@@ -415,7 +423,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (inventoryJob?.isActive == true) return
         val startingPower = initialPower.coerceIn(searchPowerPolicy.minPower, searchPowerPolicy.maxPower)
         _state.value = AppState.RfidSearch(item, startingPower)
-        emitEvent("Ищем ${item.name}. Удерживайте курок")
         inventoryJob = viewModelScope.launch {
             var power = startingPower
             try {
@@ -428,14 +435,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     gateway.stopInventory()
                     captureReads = false
                     val reads = synchronized(readBuffer) { readBuffer.filter { it.epc.equals(item.epc, true) } }
-                    val strong = reads.map { it.rssi }.average().takeIf { !it.isNaN() }?.let { it > -55 } == true
+                    val bestRssi = reads.asSequence().map { it.rssi }.filter { it != 0 }.maxOrNull()
+                    val signalStrength = searchSignalPolicy.strength(bestRssi)
+                    val strong = bestRssi?.let { it > -55 } == true
                     if (reads.isNotEmpty()) {
-                        emitEvent(if (strong) "Метка близко. Уточняем расстояние" else "Метка в зоне поиска")
                         power = searchPowerPolicy.nextPower(power, detected = true, strong = strong)
                     } else {
                         power = searchPowerPolicy.nextPower(power, detected = false, strong = false)
                     }
-                    _state.value = AppState.RfidSearch(item, power)
+                    _state.value = AppState.RfidSearch(item, power, bestRssi, signalStrength)
                 }
             } finally {
                 captureReads = false

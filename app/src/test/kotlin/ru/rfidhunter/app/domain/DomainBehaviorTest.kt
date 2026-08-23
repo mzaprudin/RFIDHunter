@@ -48,6 +48,25 @@ class DomainBehaviorTest {
     }
 
     @Test
+    fun searchSignalMapsOnlyValidRssiToVisibleFeedback() {
+        val policy = SearchSignalPolicy()
+        assertEquals(0f, policy.strength(null))
+        assertEquals(0f, policy.strength(0))
+        assertTrue(policy.strength(-90) > 0f)
+        assertTrue(policy.strength(-62) > policy.strength(-82))
+        assertEquals(1f, policy.strength(-35))
+    }
+
+    @Test
+    fun geigerClicksAccelerateAsTargetSignalGetsStronger() {
+        val policy = SearchSignalPolicy()
+        assertTrue(policy.clickIntervalMs(0.2f) > policy.clickIntervalMs(0.6f))
+        assertTrue(policy.clickIntervalMs(0.6f) > policy.clickIntervalMs(1f))
+        assertEquals(policy.slowestClickIntervalMs, policy.clickIntervalMs(0f))
+        assertEquals(policy.fastestClickIntervalMs, policy.clickIntervalMs(1f))
+    }
+
+    @Test
     fun normalizationIsRussianOfflineSafe() {
         assertEquals("елка", normalizeText("Ёлка!"))
         assertTrue(normalizedTokens("пульт от ТВ").contains("тв"))

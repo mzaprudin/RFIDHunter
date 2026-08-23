@@ -49,11 +49,18 @@ sealed interface AppState {
     ) : AppState
     data object AskSearchCommand : AppState
     data class SearchTarget(val item: Item) : AppState
-    data class RfidSearch(val item: Item, val power: Int = 30) : AppState
+    data class RfidSearch(
+        val item: Item,
+        val power: Int = 30,
+        val rssi: Int? = null,
+        val signalStrength: Float = 0f,
+    ) : AppState
     data class SearchPaused(
         val item: Item,
         val power: Int,
         val lastDetection: Boolean = false,
+        val lastRssi: Int? = null,
+        val signalStrength: Float = 0f,
     ) : AppState
     data class Found(val item: Item) : AppState
     data class ItemCard(val item: Item) : AppState
