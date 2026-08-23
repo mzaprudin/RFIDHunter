@@ -64,6 +64,7 @@ class DomainBehaviorTest {
         assertTrue(policy.clickIntervalMs(0.6f) > policy.clickIntervalMs(1f))
         assertEquals(policy.slowestClickIntervalMs, policy.clickIntervalMs(0f))
         assertEquals(policy.fastestClickIntervalMs, policy.clickIntervalMs(1f))
+        assertTrue(policy.clickIntervalMs(0.1f) <= 820L)
     }
 
     @Test
@@ -85,6 +86,17 @@ class DomainBehaviorTest {
         tracker.observe(-45, 1_600L)
 
         assertEquals(-45, tracker.currentRssi(1_600L))
+    }
+
+    @Test
+    fun searchSignalTrackerKeepsOneScaleAcrossPowerChanges() {
+        val tracker = SearchSignalTracker(staleAfterMs = 1_000L, smoothingFactor = 0.5, referencePower = 30)
+        tracker.observe(rssi = -50, power = 30, nowMs = 1_000L)
+        tracker.takeStrongestObservation()
+        tracker.observe(rssi = -52, power = 25, nowMs = 1_100L)
+
+        assertEquals(-50, tracker.currentRssi(1_100L))
+        assertEquals(-52, tracker.takeStrongestObservation())
     }
 
     @Test

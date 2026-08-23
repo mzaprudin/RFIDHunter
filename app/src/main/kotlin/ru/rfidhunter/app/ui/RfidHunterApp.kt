@@ -5,6 +5,7 @@ import android.media.MediaActionSound
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -87,6 +88,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import ru.rfidhunter.app.BuildConfig
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
@@ -658,7 +660,7 @@ private fun SearchItemPhoto(item: Item) {
 private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
     val animatedStrength by animateFloatAsState(
         targetValue = signalStrength.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 220),
+        animationSpec = tween(durationMillis = 340),
         label = "RFID signal needle",
     )
     Canvas(modifier) {
@@ -707,14 +709,23 @@ private fun GeigerClickFeedback(signalStrength: Float) {
     val latestStrength by rememberUpdatedState(signalStrength)
     DisposableEffect(player) { onDispose { player.release() } }
     LaunchedEffect(player) {
-        var lastClickAt = SystemClock.elapsedRealtime() - policy.clickIntervalMs(latestStrength)
+        var cadenceStrength = latestStrength.coerceIn(0f, 1f)
+        var lastClickAt = SystemClock.elapsedRealtime() - policy.clickIntervalMs(cadenceStrength)
         while (isActive) {
-            val strength = latestStrength
-            val interval = policy.clickIntervalMs(strength)
+            val target = latestStrength.coerceIn(0f, 1f)
+            val smoothing = if (target >= cadenceStrength) 0.18f else 0.06f
+            cadenceStrength += (target - cadenceStrength) * smoothing
+            if (kotlin.math.abs(target - cadenceStrength) < 0.002f) cadenceStrength = target
+            val interval = policy.clickIntervalMs(cadenceStrength)
             val now = SystemClock.elapsedRealtime()
             val dueAt = lastClickAt + interval
             if (now >= dueAt) {
-                if (player.play()) lastClickAt = now
+                if (player.play()) {
+                    lastClickAt = now
+                    if (BuildConfig.DEBUG) {
+                        Log.d(GEIGER_LOG_TAG, "click strength=$cadenceStrength intervalMs=$interval")
+                    }
+                }
                 delay(15L)
             } else {
                 delay((dueAt - now).coerceIn(5L, 20L))
@@ -722,6 +733,8 @@ private fun GeigerClickFeedback(signalStrength: Float) {
         }
     }
 }
+
+private const val GEIGER_LOG_TAG = "GeigerClick"
 
 private fun signalDescription(strength: Float): String = when {
     strength <= 0f -> "Сигнала нет"

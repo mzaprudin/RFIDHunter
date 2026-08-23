@@ -13,14 +13,16 @@ data class SearchSignalPolicy(
     val weakestRssi: Int = -82,
     val strongestRssi: Int = -42,
     val minimumVisibleStrength: Float = 0.08f,
-    val slowestClickIntervalMs: Long = 950L,
-    val fastestClickIntervalMs: Long = 90L,
+    val slowestClickIntervalMs: Long = 1_100L,
+    val fastestClickIntervalMs: Long = 85L,
+    val cadenceExponent: Double = 0.55,
 ) {
     init {
         require(strongestRssi > weakestRssi)
         require(minimumVisibleStrength in 0f..1f)
         require(slowestClickIntervalMs >= fastestClickIntervalMs)
         require(fastestClickIntervalMs > 0L)
+        require(cadenceExponent > 0.0)
     }
 
     fun strength(rssi: Int?): Float {
@@ -32,7 +34,9 @@ data class SearchSignalPolicy(
 
     fun clickIntervalMs(strength: Float): Long {
         val normalized = strength.coerceIn(0f, 1f)
-        val acceleration = normalized.toDouble().pow(1.35).toFloat()
+        // Expand the weak-signal end of the scale so a useful direction
+        // change is audible before the user is already next to the item.
+        val acceleration = normalized.toDouble().pow(cadenceExponent).toFloat()
         return (slowestClickIntervalMs -
             (slowestClickIntervalMs - fastestClickIntervalMs) * acceleration).toLong()
     }

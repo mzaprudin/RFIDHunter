@@ -5,7 +5,9 @@ import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.domain.ConnectionState
@@ -300,12 +303,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _recentReads.value = emptyList()
         emitEvent("Проверяю метки")
         try {
-            gateway.startInventory(InventoryConfig(power = searchPowerPolicy.maxPower, durationMs = durationMs))
+            startInventoryOffMain(InventoryConfig(power = searchPowerPolicy.maxPower, durationMs = durationMs))
             delay(durationMs)
         } catch (error: Throwable) {
             emitEvent("Ошибка чтения меток: ${error.message ?: error.javaClass.simpleName}")
         } finally {
-            runCatching { gateway.stopInventory() }
+            runCatching { stopInventoryOffMain() }
             emitEvent("Проверка меток завершена")
         }
     }
@@ -436,11 +439,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         synchronized(readBuffer) { readBuffer.clear() }
         captureReads = true
         try {
-            gateway.setReadPower(power)
-            gateway.startInventory(InventoryConfig(power, duration))
+            startInventoryOffMain(InventoryConfig(power, duration))
             delay(duration)
         } finally {
-            try { gateway.stopInventory() } catch (_: Throwable) { }
+            try { stopInventoryOffMain() } catch (_: Throwable) { }
             captureReads = false
         }
     }
@@ -457,12 +459,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val observationJob = launch(start = CoroutineStart.UNDISPATCHED) {
                         gateway.tagObservations.collect { read ->
                             if (read.epc.equals(item.epc, ignoreCase = true)) {
-                                tracker.observe(read.rssi, SystemClock.elapsedRealtime())
+                                tracker.observe(read.rssi, power, SystemClock.elapsedRealtime())
                             }
                         }
                     }
                     try {
-                        gateway.startInventory(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
+                        startInventoryOffMain(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
                         var nextPowerUpdateAt = SystemClock.elapsedRealtime() + SEARCH_POWER_UPDATE_INTERVAL_MS
                         var strongWindows = 0
                         var missingWindows = 0
@@ -492,11 +494,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     else -> power
                                 }
                                 if (nextPower != power) {
-                                    power = nextPower
                                     strongWindows = 0
                                     missingWindows = 0
-                                    gateway.stopInventory()
-                                    gateway.startInventory(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
+                                    stopInventoryOffMain()
+                                    power = nextPower
+                                    startInventoryOffMain(InventoryConfig(power, SEARCH_CONTINUOUS_DURATION_MS))
                                 }
                                 nextPowerUpdateAt = now + SEARCH_POWER_UPDATE_INTERVAL_MS
                             }
@@ -515,7 +517,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } finally {
                 captureReads = false
-                try { gateway.stopInventory() } catch (_: Throwable) { }
+                try { stopInventoryOffMain() } catch (_: Throwable) { }
             }
         }
     }
@@ -937,7 +939,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         searchResumeJob?.cancel()
         voiceJob?.cancel()
         captureReads = false
-        viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
+        viewModelScope.launch { try { stopInventoryOffMain() } catch (_: Throwable) { } }
         _state.value = AppState.Idle
         markActivity()
     }
@@ -948,8 +950,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         searchResumeJob?.cancel()
         searchResumeJob = null
         captureReads = false
-        viewModelScope.launch { try { gateway.stopInventory() } catch (_: Throwable) { } }
+        viewModelScope.launch { try { stopInventoryOffMain() } catch (_: Throwable) { } }
         _state.value = AppState.Idle
+    }
+
+    private suspend fun startInventoryOffMain(config: InventoryConfig) {
+        withContext(Dispatchers.IO) { gateway.startInventory(config) }
+    }
+
+    private suspend fun stopInventoryOffMain() {
+        withContext(NonCancellable + Dispatchers.IO) { gateway.stopInventory() }
     }
 
     private fun emitEvent(value: String) { _events.tryEmit(value) }
@@ -972,6 +982,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val SEARCH_POWER_UPDATE_INTERVAL_MS = 500L
         const val SEARCH_STRONG_RSSI = -55
         const val SEARCH_STRONG_WINDOWS_TO_NARROW = 3
-        const val SEARCH_MISSING_WINDOWS_TO_WIDEN = 2
+        const val SEARCH_MISSING_WINDOWS_TO_WIDEN = 4
     }
 }

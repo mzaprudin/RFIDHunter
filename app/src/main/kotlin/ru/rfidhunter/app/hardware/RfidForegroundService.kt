@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.ActivityOptions
+import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.app.Service
@@ -125,7 +126,7 @@ class RfidForegroundService : Service() {
     }
 
     private fun bringActivityForwardForTrigger() {
-        if ((application as RfidHunterApplication).mainActivityResumed) {
+        if (isMainActivityActuallyForeground()) {
             Log.i(TAG, "MainActivity already resumed; trigger wake UI skipped")
             return
         }
@@ -184,6 +185,19 @@ class RfidForegroundService : Service() {
                 Log.e(TAG, "Could not bring trigger activity to front", error)
             }
         }
+    }
+
+    private fun isMainActivityActuallyForeground(): Boolean {
+        val lifecycleResumed = (application as RfidHunterApplication).mainActivityResumed
+        val processInfo = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(processInfo)
+        val processForeground =
+            processInfo.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        Log.i(
+            TAG,
+            "Trigger foreground check lifecycleResumed=$lifecycleResumed importance=${processInfo.importance}",
+        )
+        return lifecycleResumed && processForeground
     }
 
     private fun nextTriggerRequestCode(): Int {
