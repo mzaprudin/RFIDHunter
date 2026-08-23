@@ -734,39 +734,47 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
             Button(requestPermission, Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
         }
     } else Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(3f / 4f).align(Alignment.TopCenter)
-                .clip(RoundedCornerShape(12.dp)).background(Color.Black),
+        Column(
+            Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            AndroidView({ PreviewView(it).apply { this.controller = controller; scaleType = PreviewView.ScaleType.FILL_CENTER } }, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxWidth().background(Color.White.copy(.92f)).padding(12.dp), Alignment.Center) {
+                state.name?.let { ThingName(it, fontSize = 28.sp) }
+                    ?: state.item?.let { ThingName(it.name, fontSize = 28.sp) }
+                    ?: Text("Фотография вещи", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
+            Spacer(Modifier.height(12.dp))
+            // Nothing is drawn over this slot: every visible part of the 3:4
+            // viewfinder is retained by the centre-crop shown in review.
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(3f / 4f)
+                    .clip(RoundedCornerShape(12.dp)).background(Color.Black),
+            ) {
+                AndroidView(
+                    { PreviewView(it).apply {
+                        this.controller = controller
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                    } },
+                    Modifier.fillMaxSize(),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
             Text(
-                "Кадр 3:4",
-                modifier = Modifier.align(Alignment.TopCenter).background(Color.Black.copy(alpha = .55f)).padding(horizontal = 10.dp, vertical = 5.dp),
-                color = Color.White,
-                fontSize = 14.sp,
+                buildAnnotatedString {
+                    append("Нажмите ")
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    append("Громкость+")
+                    pop()
+                    append(" или ")
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    append("Громкость−")
+                    pop()
+                    append(" для фото")
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                fontSize = 20.sp,
+                textAlign = TextAlign.Center,
             )
-        }
-        Text(
-            buildAnnotatedString {
-                append("Нажмите ")
-                pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF81D4FA)))
-                append("Громкость+")
-                pop()
-                append(" или ")
-                pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF81D4FA)))
-                append("Громкость−")
-                pop()
-                append(" для фото")
-            },
-            modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(.65f)).padding(18.dp),
-            color = Color.White,
-            fontSize = 20.sp,
-            textAlign = TextAlign.Center,
-        )
-        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.White.copy(.92f)).padding(12.dp), Alignment.Center) {
-            state.name?.let { ThingName(it, fontSize = 28.sp) }
-                ?: state.item?.let { ThingName(it.name, fontSize = 28.sp) }
-                ?: Text("Фотография вещи", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
         if (processingPhoto) Box(Modifier.fillMaxSize().background(Color.Black.copy(.48f)), Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) { CircularProgressIndicator(color = Color.White, strokeWidth = 6.dp, modifier = Modifier.size(64.dp)); Text("Обрабатываю фото…", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold) } }
     }
