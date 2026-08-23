@@ -84,7 +84,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Production APKs use R8 and resource shrinking. The application
+            // ships large offline voice/native assets, so code shrinking alone
+            // is not enough to make a meaningful release build.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
