@@ -74,15 +74,11 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -951,12 +947,9 @@ private fun SearchScreen(
         ) {
             SearchItemPhoto(item)
             Spacer(Modifier.height(12.dp))
-            // The dial is deliberately bounded: the Canvas used to consume
-            // the whole remaining height, leaving empty space below its arc
-            // and visually separating it from the signal reading.
-            AnalogSignalMeter(
+            LinearSignalMeter(
                 animatedVisualStrength,
-                Modifier.fillMaxWidth().height(148.dp),
+                Modifier.fillMaxWidth().height(96.dp),
             )
             Spacer(Modifier.height(12.dp))
             SignalReadout(animatedVisualStrength, rssi)
@@ -1043,61 +1036,49 @@ private fun SearchItemPhoto(item: Item) {
 }
 
 @Composable
-private fun AnalogSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
-    Canvas(modifier.clipToBounds()) {
-        val strokeWidth = (size.minDimension * 0.055f).coerceAtLeast(14f)
-        // Keep labels and tick marks inside the reserved Canvas slot. Canvas
-        // itself is not clipped, so the former geometry could paint on top of
-        // the photo above it on compact screens.
-        val radius = minOf(size.width * 0.35f, size.height * 0.43f)
-        val center = Offset(size.width / 2f, size.height * 0.75f)
-        val arcTopLeft = Offset(center.x - radius, center.y - radius)
-        val arcSize = Size(radius * 2f, radius * 2f)
-        val startAngle = 200f
-        val sweepAngle = 140f
+private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val left = size.width * 0.035f
+        val right = size.width * 0.965f
+        val trackTop = size.height * 0.12f
+        val trackHeight = size.height * 0.46f
+        val trackWidth = right - left
+        val cornerRadius = trackHeight / 2f
+        val fillWidth = trackWidth * signalStrength.coerceIn(0f, 1f)
 
-        drawArc(Color(0xFF90A4AE), startAngle, sweepAngle * 0.48f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
-        drawArc(Color(0xFFF9A825), startAngle + sweepAngle * 0.48f, sweepAngle * 0.27f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
-        drawArc(Color(0xFF2E7D32), startAngle + sweepAngle * 0.75f, sweepAngle * 0.25f, false, arcTopLeft, arcSize, style = Stroke(strokeWidth, cap = StrokeCap.Butt))
-
-        repeat(11) { index ->
-            val angle = Math.toRadians((startAngle + sweepAngle * index / 10f).toDouble())
-            val outer = Offset(
-                center.x + kotlin.math.cos(angle).toFloat() * (radius + strokeWidth * 0.72f),
-                center.y + kotlin.math.sin(angle).toFloat() * (radius + strokeWidth * 0.72f),
+        drawRoundRect(
+            color = Color(0xFFCFD8DC),
+            topLeft = androidx.compose.ui.geometry.Offset(left, trackTop),
+            size = androidx.compose.ui.geometry.Size(trackWidth, trackHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
+        )
+        if (fillWidth > 0f) {
+            drawRoundRect(
+                color = signalColor(signalStrength),
+                topLeft = androidx.compose.ui.geometry.Offset(left, trackTop),
+                size = androidx.compose.ui.geometry.Size(fillWidth, trackHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
             )
-            val innerRadius = radius - if (index % 5 == 0) strokeWidth * 1.05f else strokeWidth * 0.62f
-            val inner = Offset(
-                center.x + kotlin.math.cos(angle).toFloat() * innerRadius,
-                center.y + kotlin.math.sin(angle).toFloat() * innerRadius,
+        }
+        repeat(5) { index ->
+            val x = left + trackWidth * index / 4f
+            drawLine(
+                color = Color.White.copy(alpha = 0.8f),
+                start = androidx.compose.ui.geometry.Offset(x, trackTop + trackHeight * 0.2f),
+                end = androidx.compose.ui.geometry.Offset(x, trackTop + trackHeight * 0.8f),
+                strokeWidth = 4f,
             )
-            drawLine(Color(0xFF263238), inner, outer, strokeWidth = if (index % 5 == 0) 5f else 3f, cap = StrokeCap.Round)
         }
 
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.rgb(38, 50, 56)
             textAlign = android.graphics.Paint.Align.CENTER
-            textSize = (size.minDimension * 0.085f).coerceIn(20f, 34f)
+            textSize = (size.height * 0.20f).coerceIn(28f, 50f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
-        listOf(0 to "0", 5 to "50", 10 to "100").forEach { (index, label) ->
-            val angle = Math.toRadians((startAngle + sweepAngle * index / 10f).toDouble())
-            val labelRadius = radius + strokeWidth * 1.72f
-            val position = Offset(
-                center.x + kotlin.math.cos(angle).toFloat() * labelRadius,
-                center.y + kotlin.math.sin(angle).toFloat() * labelRadius,
-            )
-            drawContext.canvas.nativeCanvas.drawText(label, position.x, position.y, labelPaint)
+        listOf(left to "0", (left + right) / 2f to "50", right to "100").forEach { (x, label) ->
+            drawContext.canvas.nativeCanvas.drawText(label, x, size.height * 0.94f, labelPaint)
         }
-
-        val needleAngle = Math.toRadians((startAngle + sweepAngle * signalStrength.coerceIn(0f, 1f)).toDouble())
-        val needleEnd = Offset(
-            center.x + kotlin.math.cos(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
-            center.y + kotlin.math.sin(needleAngle).toFloat() * (radius - strokeWidth * 1.35f),
-        )
-        drawLine(Color(0xFFC62828), center, needleEnd, strokeWidth = 10f, cap = StrokeCap.Round)
-        drawCircle(Color(0xFF263238), radius = 18f, center = center)
-        drawCircle(Color(0xFFF7F7F2), radius = 7f, center = center)
     }
 }
 
@@ -1146,18 +1127,18 @@ private fun signalColor(strength: Float): Color = when {
 
 @Composable
 private fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         ItemDetails(item)
         Text("Нажмите кнопку с нужным действием", fontSize = 23.sp, textAlign = TextAlign.Center)
         Button(
             { viewModel.startSearching(item) },
-            Modifier.fillMaxWidth().height(68.dp),
+            Modifier.fillMaxWidth().height(60.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
         ) { Text("ИСКАТЬ ВЕЩЬ", fontSize = 19.sp) }
-        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(68.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
+        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
+        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
         Spacer(Modifier.height(12.dp))
     }
 }
