@@ -61,6 +61,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as RfidHunterApplication
     private val repository = app.itemRepository
     val items = repository.items.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val pendingSyncCount = repository.pendingSyncCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val syncSettings = app.syncSettings.state
     val gateway: RfidGateway = app.rfidGateway
     val fakeGateway: FakeRfidGateway? = gateway as? FakeRfidGateway
     val fakeVoice = FakeVoiceRecognizer()
@@ -111,6 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var automaticRecoverySuppressed = false
 
     init {
+        app.syncScheduler.enqueue()
         viewModelScope.launch { repository.seedIfEmpty() }
         viewModelScope.launch {
             VoiceModelInstaller.installFromAssets(application)
@@ -734,6 +737,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = AppState.Service
     }
     fun closeService() { markActivity(); _state.value = AppState.Idle }
+
+    fun setBackupEndpoint(endpoint: String) {
+        markActivity()
+        app.syncSettings.setEndpoint(endpoint)
+        app.syncScheduler.enqueue()
+        emitEvent(if (endpoint.trim().isBlank()) "Адрес синхронизации очищен" else "Адрес синхронизации сохранён")
+    }
+
+    fun syncNow() {
+        markActivity()
+        app.syncScheduler.enqueue()
+        emitEvent("Синхронизация поставлена в очередь")
+    }
 
     fun setFakeScenario(scenario: FakeScenario) { markActivity(); fakeGateway?.scenario = scenario }
     fun setFakeCustomTag(epc: String, rssi: Int) { markActivity(); fakeGateway?.customTags = listOf(TagRead(epc, rssi)) }

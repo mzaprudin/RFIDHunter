@@ -131,6 +131,8 @@ fun RfidHunterApp(
     val readerDiagnostic by viewModel.readerDiagnostic.collectAsState()
     val readerReady by viewModel.readerReady.collectAsState()
     val recentReads by viewModel.recentReads.collectAsState()
+    val pendingSyncCount by viewModel.pendingSyncCount.collectAsState()
+    val syncSettings by viewModel.syncSettings.collectAsState()
     val voiceBackend by viewModel.voiceBackend.collectAsState()
     var announcement by remember { mutableStateOf("") }
     var announcementKey by remember { mutableStateOf("") }
@@ -197,7 +199,7 @@ fun RfidHunterApp(
                 }
                 Box(Modifier.weight(1f)) {
                     if (state is AppState.Service) {
-                        ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads)
+                        ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads, pendingSyncCount, syncSettings)
                     } else {
                         UserScreen {
                             when (val current = state) {
@@ -1205,12 +1207,15 @@ private fun ServiceScreen(
     diagnostic: String?,
     readerReady: Boolean,
     recentReads: List<ru.rfidhunter.app.domain.TagRead>,
+    pendingSyncCount: Int,
+    syncSettings: ru.rfidhunter.app.data.SyncSettingsState,
 ) {
     val fake = viewModel.fakeGateway
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
     var diagnosticsEnabled by remember { mutableStateOf(viewModel.diagnosticsEnabled()) }
     var recordings by remember { mutableStateOf(viewModel.diagnosticRecordings()) }
+    var backupEndpoint by remember(syncSettings.endpoint) { mutableStateOf(syncSettings.endpoint) }
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
         Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL IH25"}")
@@ -1223,6 +1228,24 @@ private fun ServiceScreen(
             else -> "отключён"
         }}")
         diagnostic?.takeIf { it.isNotBlank() }?.let { Text("Диагностика: $it") }
+        Text("Резервное копирование каталога", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("В очереди на отправку: $pendingSyncCount")
+        syncSettings.lastSuccessAt?.let { timestamp ->
+            Text("Последняя успешная отправка: ${SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))}")
+        }
+        syncSettings.lastError?.let { Text("Ошибка синхронизации: $it", color = Color(0xFFB00020)) }
+        OutlinedTextField(
+            value = backupEndpoint,
+            onValueChange = { backupEndpoint = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Адрес сервера (например, https://server)") },
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MaterialOutlinedButton({ viewModel.setBackupEndpoint(backupEndpoint) }, modifier = Modifier.weight(1f)) { Text("СОХРАНИТЬ") }
+            MaterialOutlinedButton({ viewModel.syncNow() }, modifier = Modifier.weight(1f)) { Text("СИНХРОНИЗИРОВАТЬ") }
+        }
+        Text("Отправляются только новые и изменённые записи; фото передаются отдельно по SHA-256.", fontSize = 14.sp)
         Button(viewModel::scanReaders, Modifier.fillMaxWidth(), enabled = scanState != ReaderScanState.SCANNING) {
             if (scanState == ReaderScanState.SCANNING) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
