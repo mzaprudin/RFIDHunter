@@ -114,7 +114,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         app.syncScheduler.enqueue()
-        viewModelScope.launch { repository.seedIfEmpty() }
         viewModelScope.launch {
             VoiceModelInstaller.installFromAssets(application)
             voiceEngine.prepare()

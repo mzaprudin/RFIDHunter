@@ -93,7 +93,7 @@ interface SyncOutboxDao {
     suspend fun recordFailure(operationId: String, error: String)
 }
 
-@Database(entities = [ItemEntity::class, SyncOutboxEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ItemEntity::class, SyncOutboxEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun itemDao(): ItemDao
     abstract fun syncOutboxDao(): SyncOutboxDao
@@ -103,7 +103,7 @@ abstract class AppDatabase : RoomDatabase() {
             context,
             AppDatabase::class.java,
             "rfidhunter.db",
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
@@ -152,6 +152,34 @@ abstract class AppDatabase : RoomDatabase() {
                                 cursor.getLong(updatedIndex),
                             ),
                         )
+                    }
+                }
+            }
+        }
+
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.query(
+                    """SELECT id, syncId FROM items WHERE
+                        (name = ? AND upper(epc) = ?) OR
+                        (name = ? AND upper(epc) = ?) OR
+                        (name = ? AND upper(epc) = ?)""".trimIndent(),
+                    arrayOf(
+                        "Очки",
+                        "E2000017221101441890AB01",
+                        "Ключи",
+                        "E2000017221101441890AB02",
+                        "Пульт",
+                        "E2000017221101441890AB03",
+                    ),
+                ).use { cursor ->
+                    val idIndex = cursor.getColumnIndexOrThrow("id")
+                    val syncIdIndex = cursor.getColumnIndexOrThrow("syncId")
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idIndex)
+                        val syncId = cursor.getString(syncIdIndex)
+                        database.execSQL("DELETE FROM sync_outbox WHERE syncId = ?", arrayOf(syncId))
+                        database.execSQL("DELETE FROM items WHERE id = ?", arrayOf(id))
                     }
                 }
             }
@@ -241,13 +269,6 @@ class ItemRepository(
         syncScheduler.enqueue()
     }
 
-    suspend fun seedIfEmpty() {
-        if (dao.count() == 0) {
-            insert("Очки", "E2000017221101441890AB01", null)
-            insert("Ключи", "E2000017221101441890AB02", null)
-            insert("Пульт", "E2000017221101441890AB03", null)
-        }
-    }
 }
 
 private fun ItemEntity.toDomain() = Item(

@@ -782,7 +782,24 @@ private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, o
     ) {
         val thingName = state.name ?: state.item?.name
         if (thingName != null) ThingName(thingName, fontSize = 26.sp)
-        Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF202020)), Alignment.Center) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) else Text("Фото отсутствует", color = Color.White, fontSize = 24.sp) }
+        Box(
+            Modifier.fillMaxWidth().weight(1f).background(Color(0xFF202020)),
+            Alignment.Center,
+        ) {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(3f / 4f).background(Color.Black),
+                Alignment.Center,
+            ) {
+                if (bitmap != null) {
+                    // The saved file is center-cropped to portrait 3:4; keeping
+                    // the review in the same slot prevents unseen edges from
+                    // appearing after the camera frame.
+                    Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                } else {
+                    Text("Фото отсутствует", color = Color.White, fontSize = 24.sp)
+                }
+            }
+        }
         Button(onRedo, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB74D), contentColor = Color(0xFF3E2723))) { Text("ПЕРЕДЕЛАТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
         Button(onDone, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A), contentColor = Color.White)) { Text("ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
     }
