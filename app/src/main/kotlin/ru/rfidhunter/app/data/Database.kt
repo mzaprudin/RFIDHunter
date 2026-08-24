@@ -10,6 +10,7 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.Upsert
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -56,6 +57,9 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): ItemEntity?
 
+    @Query("SELECT * FROM items WHERE syncId = :syncId LIMIT 1")
+    suspend fun getBySyncId(syncId: String): ItemEntity?
+
     @Query("SELECT * FROM items WHERE upper(epc) = upper(:epc) LIMIT 1")
     suspend fun getByEpc(epc: String): ItemEntity?
 
@@ -65,8 +69,14 @@ interface ItemDao {
     @Update
     suspend fun update(item: ItemEntity)
 
+    @Upsert
+    suspend fun upsertRestored(item: ItemEntity)
+
     @Query("DELETE FROM items WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM items WHERE syncId = :syncId")
+    suspend fun deleteBySyncId(syncId: String)
 
     @Query("SELECT COUNT(*) FROM items")
     suspend fun count(): Int
@@ -91,6 +101,9 @@ interface SyncOutboxDao {
 
     @Query("UPDATE sync_outbox SET attempts = attempts + 1, lastError = :error WHERE operationId = :operationId")
     suspend fun recordFailure(operationId: String, error: String)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE syncId = :syncId)")
+    suspend fun hasPending(syncId: String): Boolean
 }
 
 @Database(entities = [ItemEntity::class, SyncOutboxEntity::class], version = 3, exportSchema = false)

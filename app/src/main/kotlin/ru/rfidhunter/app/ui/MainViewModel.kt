@@ -744,10 +744,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         emitEvent(if (endpoint.trim().isBlank()) "Адрес синхронизации очищен" else "Адрес синхронизации сохранён")
     }
 
+    fun createBackupAccount(password: String, displayName: String? = null) {
+        markActivity()
+        accountAccess(password, displayName, restore = false)
+    }
+
+    fun recoverBackupAccount(password: String, displayName: String? = null) {
+        markActivity()
+        accountAccess(password, displayName, restore = true)
+    }
+
+    private fun accountAccess(password: String, displayName: String?, restore: Boolean) {
+        viewModelScope.launch {
+            val endpoint = app.syncSettings.state.value.endpoint.trim().trimEnd('/')
+            if (endpoint.isBlank()) {
+                app.syncSettings.registrationError("server endpoint is not configured")
+                emitEvent("server endpoint is not configured")
+                return@launch
+            }
+            if (password.length < 8) {
+                app.syncSettings.registrationError("пароль должен содержать минимум 8 символов")
+                emitEvent("пароль должен содержать минимум 8 символов")
+                return@launch
+            }
+            try {
+                withContext(Dispatchers.IO) {
+                    if (restore) app.syncSettings.restoreAccount(endpoint, password, displayName)
+                    else app.syncSettings.registerAccount(endpoint, password, displayName)
+                }
+                emitEvent(if (restore) "каталог привязан, восстановление поставлено в очередь" else "резервная учетная запись создана")
+                app.syncScheduler.enqueue()
+                if (restore) app.syncScheduler.enqueueRestore()
+            } catch (error: Throwable) {
+                app.syncSettings.registrationError(error.message ?: "не удалось подключить резервирование")
+                emitEvent(error.message ?: "не удалось подключить резервирование")
+            }
+        }
+    }
+
     fun syncNow() {
         markActivity()
         app.syncScheduler.enqueue()
         emitEvent("Синхронизация поставлена в очередь")
+    }
+
+    fun restoreBackup() {
+        markActivity()
+        app.syncScheduler.enqueueRestore()
+        emitEvent("catalog restore queued")
     }
 
     fun setFakeScenario(scenario: FakeScenario) { markActivity(); fakeGateway?.scenario = scenario }

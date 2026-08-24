@@ -35,3 +35,30 @@ class FileResult(BaseModel):
     sha256: str
     sizeBytes: int
     status: Literal["stored", "already_exists"]
+
+
+class AccountAccessRequest(BaseModel):
+    """Create or recover a catalog without an administrator-issued code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=8, max_length=256)
+    deviceId: str = Field(min_length=1, max_length=128)
+    keyId: str = Field(min_length=1, max_length=128)
+    publicKey: str = Field(min_length=32, max_length=4096)
+    displayName: str | None = Field(default=None, max_length=200)
+
+
+class AccountAccessResponse(BaseModel):
+    accountId: str
+    deviceId: str
+    keyId: str
+    scopes: list[str]
+    created: bool
+    serverTime: int
+
+
+class RestorePage(BaseModel):
+    deviceId: str
+    items: list[dict[str, object]]
+    nextCursor: str | None = None

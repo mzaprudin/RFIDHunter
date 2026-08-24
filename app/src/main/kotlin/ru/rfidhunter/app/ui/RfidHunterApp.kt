@@ -91,10 +91,12 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import ru.rfidhunter.app.BuildConfig
+import ru.rfidhunter.app.RfidHunterApplication
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
@@ -1277,6 +1279,9 @@ private fun ServiceScreen(
     var diagnosticsEnabled by remember { mutableStateOf(viewModel.diagnosticsEnabled()) }
     var recordings by remember { mutableStateOf(viewModel.diagnosticRecordings()) }
     var backupEndpoint by remember(syncSettings.endpoint) { mutableStateOf(syncSettings.endpoint) }
+    var accountPassword by remember { mutableStateOf("") }
+    var accountPasswordRepeat by remember { mutableStateOf("") }
+    var deviceName by remember { mutableStateOf("Samsung RFIDHunter") }
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
         Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL IH25"}")
@@ -1307,6 +1312,70 @@ private fun ServiceScreen(
             MaterialOutlinedButton({ viewModel.syncNow() }, modifier = Modifier.weight(1f)) { Text("СИНХРОНИЗИРОВАТЬ") }
         }
         Text("Отправляются только новые и изменённые записи; фото передаются отдельно по SHA-256.", fontSize = 14.sp)
+        Text("Device ID: ${viewModel.getApplication<RfidHunterApplication>().syncSettings.deviceId}", fontSize = 13.sp)
+        syncSettings.accountId?.let { Text("Каталог: $it", fontSize = 13.sp) }
+        Text(
+            if (syncSettings.registered) "Устройство зарегистрировано (${syncSettings.scopes.sorted().joinToString(", ")})"
+            else "Устройство не зарегистрировано",
+            color = if (syncSettings.registered) Color(0xFF2E7D32) else Color(0xFFB00020),
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "Резервирование необязательно: без учетной записи каталог хранится только на телефоне. Для нового телефона используйте тот же пароль.",
+            fontSize = 14.sp,
+        )
+        Text("Пароль не отправляется в резервной копии и не восстанавливается сервером — сохраните его отдельно.", fontSize = 14.sp, color = Color(0xFF8A1C1C))
+        OutlinedTextField(
+            value = accountPassword,
+            onValueChange = { accountPassword = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            label = { Text("Пароль резервной учетной записи") },
+        )
+        OutlinedTextField(
+            value = accountPasswordRepeat,
+            onValueChange = { accountPasswordRepeat = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            label = { Text("Повторите пароль для создания") },
+        )
+        OutlinedTextField(
+            value = deviceName,
+            onValueChange = { deviceName = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Название устройства") },
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MaterialOutlinedButton(
+                { viewModel.createBackupAccount(accountPassword, deviceName) },
+                modifier = Modifier.weight(1f),
+                enabled = accountPassword.length >= 8 && accountPassword == accountPasswordRepeat && !syncSettings.registered,
+            ) { Text("СОЗДАТЬ") }
+            MaterialOutlinedButton(
+                { viewModel.recoverBackupAccount(accountPassword, deviceName) },
+                modifier = Modifier.weight(1f),
+                enabled = accountPassword.length >= 8,
+            ) { Text("ВОССТАНОВИТЬ") }
+        }
+        /*
+         * The password flow above is the only account setup path; no pairing
+         * code or administrator action is required.
+         */
+        /*
+        MaterialOutlinedButton(
+            { viewModel.enrollBackupDevice(pairingCode, deviceName) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = pairingCode.isNotBlank() && !syncSettings.registered,
+        ) { Text("ЗАРЕГИСТРИРОВАТЬ УСТРОЙСТВО") }
+        */
+        MaterialOutlinedButton(
+            viewModel::restoreBackup,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = syncSettings.registered && syncSettings.scopes.contains("RESTORE"),
+        ) { Text("ВОССТАНОВИТЬ МОЙ КАТАЛОГ") }
         Button(viewModel::scanReaders, Modifier.fillMaxWidth(), enabled = scanState != ReaderScanState.SCANNING) {
             if (scanState == ReaderScanState.SCANNING) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)

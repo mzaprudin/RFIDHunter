@@ -21,10 +21,30 @@ uv run pytest
 ```
 
 At first start the server creates a random URL-safe token in
-`server/data/access_token` and logs it. Configure the Android service screen
+`server/data/access_token`. Read it from that protected file and configure the Android service screen
 with the full base URL, for example `http://host:8080/<token>`. To supply a
 known value use `RFIDHUNTER_TOKEN`; to store it elsewhere use
 `RFIDHUNTER_TOKEN_FILE`.
+
+For new installations no administrator action is needed. In the service screen
+the owner enters a password (minimum 8 characters) and the app calls:
+
+```text
+POST /<token>/v1/accounts/register
+POST /<token>/v1/accounts/restore
+```
+
+`register` creates a catalog and its first signed device. `restore` verifies
+the same password, attaches a replacement phone to that catalog, and revokes
+the old device keys. Passwords are never stored in plaintext: the server uses
+a persistent pepper for lookup and a salted scrypt verifier. Use HTTPS in
+production. The catalog remains entirely local until the owner performs this
+step. Registration/recovery attempts are rate-limited, and upload quotas are
+calculated across the whole catalog rather than per handset.
+
+The phone generates an ECDSA P-256 key in Android Keystore and sends only its
+public key. To inspect or revoke devices use `--list-devices` and
+`--revoke-device <device_id>`.
 
 По умолчанию данные находятся в `server/data/` (этот каталог не коммитится).
 Для другого места задайте `RFIDHUNTER_DATA_DIR`, либо отдельно
@@ -33,6 +53,8 @@ known value use `RFIDHUNTER_TOKEN`; to store it elsewhere use
 ## API
 
 ```text
+POST /<token>/v1/accounts/register
+POST /<token>/v1/accounts/restore
 PUT  /<token>/v1/files/{sha256}
 POST /<token>/v1/sync/events
 GET  /<token>/v1/sync/items?device_id=...
@@ -43,6 +65,12 @@ Connections whose first request does not include the exact token prefix are
 closed without an HTTP response. The token is deliberately not committed.
 It prevents casual discovery of the API but does not replace HTTPS or network
 access control; use both when the server is exposed outside a trusted LAN.
+
+All API calls except health and account access also require a signed request. The
+server validates `X-RFID-Device-Id`, `X-RFID-Key-Id`, `X-RFID-Timestamp`,
+`X-RFID-Nonce` and `X-RFID-Signature`. Uploads require the `UPLOAD` scope and
+are subject to per-device byte/request quotas. Item and file downloads require
+`RESTORE` and are restricted to that device's own namespace.
 
 Сначала отправляется JPEG-файл. Сервер проверяет, что SHA-256 тела совпадает с
 путём. Затем отправляется событие. Для `UPSERT` обязательны `name` и `epc`;

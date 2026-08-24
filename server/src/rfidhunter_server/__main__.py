@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
-from .app import app
+from .app import app, revoke_device
+from .config import Settings
+from .db import Database
 
 
 def token_guard_protocol(token: str) -> type[H11Protocol]:
@@ -56,9 +59,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RFIDHunter incremental backup server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--list-devices", action="store_true", help="list registered devices")
+    parser.add_argument("--revoke-device", help="revoke a registered device")
     args = parser.parse_args()
 
     settings = app.state.settings
+    if args.list_devices:
+        database = Database(settings.database_path)
+        with database.connection() as connection:
+            rows = connection.execute(
+                "SELECT device_id, account_id, key_id, display_name, scopes, status, created_at, last_seen_at FROM devices ORDER BY created_at"
+            ).fetchall()
+        print(json.dumps([dict(row) for row in rows], ensure_ascii=False, indent=2))
+        return
+    if args.revoke_device:
+        if not revoke_device(settings, args.revoke_device):
+            raise SystemExit(f"device not found: {args.revoke_device}")
+        print(f"revoked {args.revoke_device}")
+        return
     config = uvicorn.Config(
         app,
         host=args.host,
