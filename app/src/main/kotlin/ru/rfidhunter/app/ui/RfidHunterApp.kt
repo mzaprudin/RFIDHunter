@@ -471,12 +471,13 @@ private fun IdleScreen(
         (connection == ConnectionState.CONNECTED && !readerReady)
     val showInstruction = !connectionInProgress && (readerReady || viewModel.fakeGateway != null)
     val scanningInstruction = "Ищу считыватель рядом…\n\n" +
-        "Удерживайте кнопку справа на IH25 до звукового сигнала.\n" +
-        "Убедитесь, что слева мигает синяя лампочка.\n" +
+        "Проверьте, мигает ли слева синяя лампочка.\n" +
+        "Если не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\n" +
         "Держите считыватель рядом с телефоном."
     val disconnectedInstruction = "Считыватель отключён.\n\n" +
-        "Проверьте, что IH25 включён: удерживайте кнопку справа до звукового сигнала.\n" +
-        "Слева должна мигать синяя лампочка. Держите считыватель рядом с телефоном."
+        "Проверьте, мигает ли слева синяя лампочка.\n" +
+        "Если не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\n" +
+        "Держите считыватель рядом с телефоном."
     Column(
         Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -861,8 +862,8 @@ private fun ReaderPreparationScreen(state: AppState.ReaderPreparation) {
         Text(stage, fontSize = 24.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(28.dp))
         Text(
-            "Удерживайте кнопку справа на IH25 до звукового сигнала.\n" +
-                "Убедитесь, что слева мигает синяя лампочка.\n" +
+            "Проверьте, мигает ли слева синяя лампочка.\n" +
+                "Если не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\n" +
                 "Держите считыватель рядом с телефоном.",
             modifier = Modifier.fillMaxWidth(),
             fontSize = 21.sp,
