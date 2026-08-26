@@ -1,3 +1,102 @@
 <resources>
     <string name="app_name">Искатель вещей</string>
+
+    <!-- Idle -->
+    <string name="idle_title">Искатель вещей</string>
+    <string name="idle_trigger_hint">Нажмите курок чтобы добавить метку или начать поиск</string>
+    <string name="idle_scanning_instruction">Ищу считыватель рядом…\n\nПроверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+    <string name="idle_disconnected_instruction">Считыватель отключён.\n\nПроверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+    <string name="idle_allow_trigger_action">РАЗРЕШИТЬ ЗАПУСК ПО КУРКУ</string>
+    <string name="idle_open_catalog_format">Открыть каталог (%1$d)</string>
+    <string name="idle_add_by_voice_action">Добавить голосом</string>
+    <string name="demo_trigger_button">ДЕМО: НАЖАТЬ КУРОК</string>
+    <string name="demo_read_tag_button">ДЕМО: СЧИТАТЬ МЕТКУ</string>
+    <string name="dev_service_button">Разработчик: сервис</string>
+
+    <!-- VoiceListening -->
+    <string name="voice_say_name">Скажите, как ее назвать?</string>
+    <string name="voice_say_new_name">Скажите новое название</string>
+    <string name="voice_say_what_to_find">Скажите, что найти?</string>
+    <string name="voice_adding_new_title">Добавляем новую вещь</string>
+    <string name="voice_renaming_title">Изменяем название</string>
+    <string name="voice_missing_in_catalog">В каталоге отсутствует</string>
+    <string name="voice_missing_query_format">«%1$s»</string>
+    <string name="voice_name_another_item">Назовите другую вещь</string>
+    <!-- Display-only statuses. VOICE_INLINE_STATUSES in ui/RfidHunterApp.kt
+         compares raw event strings and must stay in sync with these two. -->
+    <string name="voice_status_recognizing">Распознаю речь…</string>
+    <string name="voice_status_listening">Слушаю</string>
+    <string name="voice_status_preparing_whisper">Подготавливаю Whisper…</string>
+    <string name="voice_status_preparing_vosk">Подготавливаю Vosk…</string>
+    <string name="voice_open_catalog_action">ОТКРЫТЬ КАТАЛОГ</string>
+
+    <!-- VoiceConfirmation -->
+    <string name="voice_confirm_heard_label">Я услышал:</string>
+    <string name="voice_confirm_heard_quote_format">«%1$s»</string>
+    <string name="voice_confirm_suggestion_label">Вероятно, вы имели в виду:</string>
+    <string name="voice_confirm_edit_action">ИЗМЕНИТЬ</string>
+    <string name="voice_confirm_yes_search_action">ДА — ИСКАТЬ</string>
+    <string name="voice_confirm_done_action">ГОТОВО</string>
+
+    <!-- Camera -->
+    <string name="camera_photo_fallback_title">Фотография вещи</string>
+    <string name="camera_permission_needed_title">Нужен доступ к камере</string>
+    <string name="camera_permission_grant_action">Разрешить камеру</string>
+    <string name="camera_processing_photo">Обрабатываю фото…</string>
+
+    <!-- PhotoReview -->
+    <string name="photo_review_missing_photo">Фото отсутствует</string>
+    <string name="photo_review_redo_action">ПЕРЕДЕЛАТЬ</string>
+    <string name="photo_review_done_action">ГОТОВО</string>
+
+    <!-- WaitForTag -->
+    <string name="wait_tag_initial_hint">Поднесите одну новую метку</string>
+    <string name="wait_tag_no_tag_hint">Новая метка не считалась. Поднесите одну метку и нажмите курок</string>
+    <string name="wait_tag_multiple_tags_hint">Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону</string>
+    <string name="wait_tag_already_assigned_hint">Эта метка уже привязана к другой вещи. Считайте другую метку</string>
+
+    <!-- AddSuccess -->
+    <string name="add_success_title">Вещь добавлена</string>
+
+    <!-- ReaderPreparation -->
+    <string name="reader_preparation_title">Подготавливаю считыватель</string>
+    <string name="reader_preparation_stage_searching">Ищу считыватель рядом…</string>
+    <string name="reader_preparation_stage_connecting">Подключаюсь к IH25…</string>
+    <string name="reader_preparation_stage_preparing">Готовлю считыватель…</string>
+    <string name="reader_preparation_step_searching">Ищу</string>
+    <string name="reader_preparation_step_connecting">Подключаю</string>
+    <string name="reader_preparation_step_preparing">Готовлю</string>
+    <string name="reader_preparation_hint">Проверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+
+    <!-- Search -->
+    <string name="search_title">Ищем</string>
+    <string name="search_reader_disabled_hint">Считыватель отключён</string>
+    <string name="search_target_hold_trigger_hint">Удерживайте курок, чтобы начать поиск</string>
+    <string name="search_progress_move_hint">Перемещайте считыватель. Щелчки участятся рядом с вещью</string>
+    <string name="search_paused_resume_hint">Нажмите и продолжайте держать курок. Через секунду поиск возобновится</string>
+    <string name="search_finish_action">ЗАВЕРШИТЬ ПОИСК</string>
+    <string name="search_signal_strength_label">Сила сигнала</string>
+
+    <!-- ItemCard -->
+    <string name="item_card_actions_hint">Нажмите кнопку с нужным действием</string>
+    <string name="item_card_search_action">ИСКАТЬ ВЕЩЬ</string>
+    <string name="item_card_change_tag_action">ИЗМЕНИТЬ МЕТКУ</string>
+    <string name="item_card_rename_action">ИЗМЕНИТЬ НАЗВАНИЕ</string>
+    <string name="item_card_retake_photo_action">ПЕРЕДЕЛАТЬ ФОТО</string>
+    <string name="item_card_delete_action">УДАЛИТЬ</string>
+
+    <!-- Catalog -->
+    <string name="catalog_title">Каталог</string>
+    <string name="catalog_tap_item_hint">Нажмите на вещь</string>
+    <string name="catalog_empty_title">Каталог пуст</string>
+    <string name="catalog_position_format">%1$d из %2$d</string>
+
+    <!-- Message / Confirm / Status -->
+    <string name="status_checking_tag">Проверяю метку…</string>
+    <string name="message_ok_action">ПОНЯТНО</string>
+    <string name="confirm_accept_action">ПОДТВЕРДИТЬ</string>
+    <string name="confirm_cancel_action">ОТМЕНА</string>
+
+    <!-- ThingName -->
+    <string name="thing_name_prefix">"Вещь: "</string>
 </resources>
