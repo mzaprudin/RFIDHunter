@@ -13,6 +13,8 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
@@ -43,21 +45,33 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button as MaterialButton
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton as MaterialOutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton as MaterialTextButton
-import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -75,10 +89,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -92,11 +111,22 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import ru.rfidhunter.app.BuildConfig
 import ru.rfidhunter.app.RfidHunterApplication
+import ru.rfidhunter.app.ui.theme.AppStyles
+import ru.rfidhunter.app.ui.theme.Dimens
+import ru.rfidhunter.app.ui.theme.LocalExtendedColors
+import ru.rfidhunter.app.ui.theme.ReviewBackdrop
+import ru.rfidhunter.app.ui.theme.RfidHunterTheme
+import ru.rfidhunter.app.ui.theme.SignalMedium
+import ru.rfidhunter.app.ui.theme.SignalStrong
+import ru.rfidhunter.app.ui.theme.SignalWeak
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collect
@@ -183,10 +213,9 @@ fun RfidHunterApp(
         }
     }
 
-    val roomyTypography = remember { Typography().withRoomyLineHeight() }
     CompositionLocalProvider(LocalScreenTouchEnabled provides screenTouchEnabled) {
-        MaterialTheme(typography = roomyTypography) {
-            Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F2)) {
+        RfidHunterTheme {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().systemBarsPadding()) {
                 // Idle has one central status slot of its own. Keeping the
                 // event banner there would duplicate connection text and push
@@ -199,7 +228,7 @@ fun RfidHunterApp(
                         state is AppState.SearchPaused ||
                         (state is AppState.VoiceListening && announcement in VOICE_INLINE_STATUSES)
                 if (announcement.isNotBlank() && !hideAnnouncement) {
-                    Text(announcement, modifier = Modifier.fillMaxWidth().background(Color(0xFFE8F5E9)).padding(16.dp), fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+                    StatusBanner(announcement, Modifier.fillMaxWidth().padding(horizontal = Dimens.ScreenPaddingH))
                 }
                 Box(Modifier.weight(1f)) {
                     if (state is AppState.Service) {
@@ -259,6 +288,25 @@ private fun UserScreen(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) { content() }
 }
 
+private enum class PillRole { Primary, Success, Warning, Danger }
+
+@Composable
+private fun pillButtonColors(role: PillRole): ButtonColors = when (role) {
+    PillRole.Primary -> ButtonDefaults.buttonColors()
+    PillRole.Success -> ButtonDefaults.buttonColors(
+        containerColor = LocalExtendedColors.current.success,
+        contentColor = LocalExtendedColors.current.onSuccess,
+    )
+    PillRole.Warning -> ButtonDefaults.buttonColors(
+        containerColor = LocalExtendedColors.current.warning,
+        contentColor = LocalExtendedColors.current.onWarning,
+    )
+    PillRole.Danger -> ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.error,
+        contentColor = MaterialTheme.colorScheme.onError,
+    )
+}
+
 /**
  * All ordinary buttons go through the same forgiving touch target: the
  * initial pointer decides the button, small movement does not cancel it, a
@@ -269,8 +317,9 @@ private fun Button(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    colors: ButtonColors = ButtonDefaults.buttonColors(),
+    role: PillRole = PillRole.Primary,
     shape: Shape = RoundedCornerShape(50),
+    icon: ImageVector? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
     val screenTouchEnabled = LocalScreenTouchEnabled.current
@@ -278,10 +327,12 @@ private fun Button(
         onClick = {},
         modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
-        colors = colors,
+        colors = pillButtonColors(role),
         shape = shape,
-        content = content,
-    )
+    ) {
+        PillButtonLeadingIcon(icon)
+        content()
+    }
 }
 
 @Composable
@@ -290,6 +341,7 @@ private fun OutlinedButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     shape: Shape = RoundedCornerShape(50),
+    icon: ImageVector? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
     val screenTouchEnabled = LocalScreenTouchEnabled.current
@@ -298,8 +350,10 @@ private fun OutlinedButton(
         modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
         shape = shape,
-        content = content,
-    )
+    ) {
+        PillButtonLeadingIcon(icon)
+        content()
+    }
 }
 
 @Composable
@@ -307,6 +361,7 @@ private fun TextButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    icon: ImageVector? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
     val screenTouchEnabled = LocalScreenTouchEnabled.current
@@ -314,8 +369,43 @@ private fun TextButton(
         onClick = {},
         modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
         enabled = enabled,
-        content = content,
-    )
+    ) {
+        PillButtonLeadingIcon(icon)
+        content()
+    }
+}
+
+@Composable
+private fun PillButtonLeadingIcon(icon: ImageVector?) {
+    if (icon != null) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(28.dp))
+        Spacer(Modifier.width(12.dp))
+    }
+}
+
+@Composable
+private fun StatusBanner(text: String, modifier: Modifier = Modifier) {
+    val extendedColors = LocalExtendedColors.current
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(Dimens.CardCorner),
+        color = extendedColors.successContainer,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = extendedColors.onSuccessContainer,
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(text, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = extendedColors.onSuccessContainer)
+        }
+    }
 }
 
 private fun Modifier.resilientButtonInput(
@@ -392,31 +482,13 @@ private fun Modifier.catalogCardTapInput(
     }
 }
 
-private fun Typography.withRoomyLineHeight(): Typography = copy(
-    displayLarge = displayLarge.copy(lineHeight = 1.28.em),
-    displayMedium = displayMedium.copy(lineHeight = 1.28.em),
-    displaySmall = displaySmall.copy(lineHeight = 1.28.em),
-    headlineLarge = headlineLarge.copy(lineHeight = 1.28.em),
-    headlineMedium = headlineMedium.copy(lineHeight = 1.28.em),
-    headlineSmall = headlineSmall.copy(lineHeight = 1.28.em),
-    titleLarge = titleLarge.copy(lineHeight = 1.28.em),
-    titleMedium = titleMedium.copy(lineHeight = 1.28.em),
-    titleSmall = titleSmall.copy(lineHeight = 1.28.em),
-    bodyLarge = bodyLarge.copy(lineHeight = 1.28.em),
-    bodyMedium = bodyMedium.copy(lineHeight = 1.28.em),
-    bodySmall = bodySmall.copy(lineHeight = 1.28.em),
-    labelLarge = labelLarge.copy(lineHeight = 1.28.em),
-    labelMedium = labelMedium.copy(lineHeight = 1.28.em),
-    labelSmall = labelSmall.copy(lineHeight = 1.28.em),
-)
-
 /** The one visual treatment for a user-facing item name. */
 @Composable
 private fun ThingName(
     name: String,
     modifier: Modifier = Modifier.fillMaxWidth(),
     fontSize: androidx.compose.ui.unit.TextUnit = 30.sp,
-    color: Color = Color(0xFF1565C0),
+    color: Color = MaterialTheme.colorScheme.primary,
     textAlign: TextAlign = TextAlign.Center,
 ) {
     Text(
@@ -427,6 +499,7 @@ private fun ThingName(
             pop()
         },
         modifier = modifier,
+        style = AppStyles.ThingTitle,
         fontSize = fontSize,
         textAlign = textAlign,
     )
@@ -453,6 +526,49 @@ private fun feedbackKey(state: AppState): String = when (state) {
     is AppState.Message -> "message-${state.highlightedTitle ?: state.text}"
     is AppState.Error -> "error"
     AppState.AskSearchCommand -> "ask-search"
+}
+
+private data class ReaderStatusUi(val text: String, val dotColor: Color, val inProgress: Boolean)
+
+@Composable
+private fun ReaderStatusCard(status: ReaderStatusUi) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(Dimens.CardCorner),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (status.inProgress) PulsingDot(status.dotColor) else StaticDot(status.dotColor)
+            Spacer(Modifier.width(10.dp))
+            Text(status.text, style = AppStyles.BodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** The pulse animation only runs while the reader is actually busy. */
+@Composable
+private fun PulsingDot(color: Color) {
+    val transition = rememberInfiniteTransition(label = "reader-status")
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.35f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "reader-status-pulse",
+    )
+    Box(
+        Modifier.size(12.dp)
+            .graphicsLayer { this.alpha = alpha }
+            .clip(CircleShape)
+            .background(color),
+    )
+}
+
+@Composable
+private fun StaticDot(color: Color) {
+    Box(Modifier.size(12.dp).clip(CircleShape).background(color))
 }
 
 @Composable
@@ -483,23 +599,48 @@ private fun IdleScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        val readerStatus = when {
-            connection == ConnectionState.CONNECTING -> "Подключаю считыватель…"
-            connection == ConnectionState.ERROR -> "Не удалось подключиться"
-            scanState == ReaderScanState.SCANNING -> "Ищу считыватель рядом…"
-            scanState == ReaderScanState.COMPLETE && diagnostic?.contains("Найдено устройств: 0") == true -> "Считыватель не найден"
-            scanState == ReaderScanState.COMPLETE && diagnostic?.startsWith("Найдено устройств:") == true -> "Найдено несколько устройств"
-            connection == ConnectionState.CONNECTED -> "Готовлю считыватель…"
-            viewModel.fakeGateway != null -> "Демо-режим без считывателя"
-            else -> "Считыватель отключён"
+        val extendedColors = LocalExtendedColors.current
+        // Single source of truth for the status card and the central slot.
+        // Branch order mirrors the legacy readerStatus text mapping exactly,
+        // so the dot color can never contradict the shown text. The ready
+        // state is new: the old UI hid the status once the reader was ready.
+        val readerStatusUi = when {
+            connection == ConnectionState.CONNECTING -> ReaderStatusUi(
+                "Подключаю считыватель…",
+                MaterialTheme.colorScheme.primary,
+                true,
+            )
+            connection == ConnectionState.ERROR -> ReaderStatusUi(
+                "Не удалось подключиться",
+                MaterialTheme.colorScheme.error,
+                false,
+            )
+            scanState == ReaderScanState.SCANNING -> ReaderStatusUi(
+                "Ищу считыватель рядом…",
+                MaterialTheme.colorScheme.primary,
+                true,
+            )
+            scanState == ReaderScanState.COMPLETE && diagnostic?.contains("Найдено устройств: 0") == true ->
+                ReaderStatusUi("Считыватель не найден", MaterialTheme.colorScheme.error, false)
+            scanState == ReaderScanState.COMPLETE && diagnostic?.startsWith("Найдено устройств:") == true ->
+                ReaderStatusUi("Найдено несколько устройств", MaterialTheme.colorScheme.error, false)
+            connection == ConnectionState.CONNECTED && readerReady ->
+                ReaderStatusUi("Считыватель готов", extendedColors.success, false)
+            connection == ConnectionState.CONNECTED -> ReaderStatusUi(
+                "Готовлю считыватель…",
+                MaterialTheme.colorScheme.primary,
+                true,
+            )
+            viewModel.fakeGateway != null -> ReaderStatusUi("Демо-режим без считывателя", extendedColors.warning, false)
+            else -> ReaderStatusUi("Считыватель отключён", MaterialTheme.colorScheme.error, false)
         }
         Text(
             "Искатель вещей",
             modifier = Modifier.fillMaxWidth().height(52.dp),
-            fontSize = 34.sp,
-            fontWeight = FontWeight.Bold,
+            style = AppStyles.ScreenTitle,
             textAlign = TextAlign.Center,
         )
+        ReaderStatusCard(readerStatusUi)
         // Keep one stable central status slot. The old layout rendered a
         // technical status above the instruction, which made the instruction
         // jump vertically as connection state changed.
@@ -516,7 +657,7 @@ private fun IdleScreen(
                 } else if (connection == ConnectionState.DISCONNECTED && viewModel.fakeGateway == null) {
                     disconnectedInstruction
                 } else {
-                    readerStatus
+                    readerStatusUi.text
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
                 fontSize = if (showInstruction) 24.sp else if (scanState == ReaderScanState.SCANNING || connection == ConnectionState.DISCONNECTED) 20.sp else 22.sp,
@@ -544,20 +685,21 @@ private fun IdleScreen(
             if (!triggerOverlayAvailable) {
                 OutlinedButton(
                     requestTriggerOverlayPermission,
-                    Modifier.fillMaxWidth().height(72.dp),
+                    Modifier.fillMaxWidth().height(Dimens.PillButtonHeight),
+                    icon = Icons.Filled.Info,
                 ) {
-                    Text("РАЗРЕШИТЬ ЗАПУСК ПО КУРКУ", fontSize = 18.sp)
+                    Text("РАЗРЕШИТЬ ЗАПУСК ПО КУРКУ", style = AppStyles.ButtonLabelSmall)
                 }
             }
-            if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(88.dp)) { Text("ДЕМО: НАЖАТЬ КУРОК", fontSize = 20.sp) }
-            Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(88.dp)) { Text("Открыть каталог (${items.size})", fontSize = 20.sp) }
-            OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(88.dp)) { Text("Добавить голосом", fontSize = 20.sp) }
+            if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight)) { Text("ДЕМО: НАЖАТЬ КУРОК", style = AppStyles.ButtonLabel) }
+            Button(viewModel::openCatalog, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), icon = Icons.AutoMirrored.Filled.List) { Text("Открыть каталог (${items.size})", style = AppStyles.ButtonLabel) }
+            OutlinedButton(viewModel::beginAddByVoice, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), icon = Icons.Filled.Add) { Text("Добавить голосом", style = AppStyles.ButtonLabel) }
         }
         if (viewModel.fakeGateway != null) TextButton(viewModel::openService) { Text("Разработчик: сервис") }
     }
 }
 
-@Composable private fun StatusScreen(text: String) = Box(Modifier.fillMaxSize(), Alignment.Center) { Text(text, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
+@Composable private fun StatusScreen(text: String) = Box(Modifier.fillMaxSize(), Alignment.Center) { Text(text, style = AppStyles.Subtitle, textAlign = TextAlign.Center) }
 
 @Composable
 private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceBackend, onOpenCatalog: () -> Unit) {
@@ -576,30 +718,30 @@ private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceB
     ) {
         if (!state.isProcessing) {
             if (isNewItem) {
-                Text("Добавляем новую вещь", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("Добавляем новую вещь", style = AppStyles.ScreenTitle, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(12.dp))
-                Text("Скажите, как ее назвать?", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("Скажите, как ее назвать?", style = AppStyles.Headline, textAlign = TextAlign.Center)
             } else if (state.renameItem != null) {
-                Text("Изменяем название", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("Изменяем название", style = AppStyles.ScreenTitle, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(12.dp))
                 ThingName(state.renameItem.name, fontSize = 30.sp)
                 Spacer(Modifier.height(12.dp))
                 Text(prompt, fontSize = 28.sp, textAlign = TextAlign.Center)
             } else if (state.missingSearchQuery != null) {
-                Text("В каталоге отсутствует", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("В каталоге отсутствует", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "«${state.missingSearchQuery}»",
                     modifier = Modifier.fillMaxWidth(),
                     fontSize = 36.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF1565C0),
+                    color = MaterialTheme.colorScheme.primary,
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(10.dp))
-                Text("Назовите другую вещь", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("Назовите другую вещь", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
             } else {
-                Text(prompt, fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text(prompt, style = AppStyles.ScreenTitle, textAlign = TextAlign.Center)
             }
         }
         Spacer(Modifier.height(28.dp))
@@ -613,11 +755,11 @@ private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceB
                 VoiceBackend.VOSK -> "Подготавливаю Vosk…"
             }
         }
-        Text(status, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = if (state.isReady) Color(0xFF1B5E20) else Color(0xFF5D4037), textAlign = TextAlign.Center)
+        Text(status, style = AppStyles.Headline, color = if (state.isReady) LocalExtendedColors.current.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         if (state.missingSearchQuery != null) {
             Spacer(Modifier.height(24.dp))
-            Button(onOpenCatalog, Modifier.fillMaxWidth().height(78.dp)) {
-                Text("ОТКРЫТЬ КАТАЛОГ", fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Button(onOpenCatalog, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), icon = Icons.AutoMirrored.Filled.List) {
+                Text("ОТКРЫТЬ КАТАЛОГ", style = AppStyles.ButtonLabel, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
             }
         }
     }
@@ -626,10 +768,12 @@ private fun VoiceListeningScreen(state: AppState.VoiceListening, backend: VoiceB
 @Composable
 private fun AnimatedProcessingIcon() {
     Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) { drawCircle(Color(0xFFE3F2FD)) }
+        // DrawScope lambdas run outside composition, so resolve colors first.
+        val circleColor = MaterialTheme.colorScheme.primaryContainer
+        Canvas(Modifier.fillMaxSize()) { drawCircle(circleColor) }
         CircularProgressIndicator(
             modifier = Modifier.size(88.dp),
-            color = Color(0xFF1565C0),
+            color = MaterialTheme.colorScheme.primary,
             strokeWidth = 10.dp,
         )
     }
@@ -639,13 +783,14 @@ private fun AnimatedProcessingIcon() {
 private fun AnimatedMicrophone() {
     val transition = rememberInfiniteTransition(label = "microphone")
     val pulse by transition.animateFloat(.92f, 1.08f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "microphone-pulse")
+    val extendedColors = LocalExtendedColors.current
     Canvas(Modifier.size(132.dp).graphicsLayer { scaleX = pulse; scaleY = pulse }) {
         val center = size.minDimension / 2f
-        drawCircle(Color(0xFFE8F5E9), center)
-        drawRoundRect(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center - 18f, center - 34f), androidx.compose.ui.geometry.Size(36f, 62f), androidx.compose.ui.geometry.CornerRadius(18f, 18f))
-        drawArc(Color(0xFF2E7D32), 0f, 180f, false, topLeft = androidx.compose.ui.geometry.Offset(center - 34f, center - 9f), size = androidx.compose.ui.geometry.Size(68f, 54f), style = Stroke(7f))
-        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center, center + 45f), androidx.compose.ui.geometry.Offset(center, center + 59f), 7f)
-        drawLine(Color(0xFF2E7D32), androidx.compose.ui.geometry.Offset(center - 20f, center + 59f), androidx.compose.ui.geometry.Offset(center + 20f, center + 59f), 7f)
+        drawCircle(extendedColors.successContainer, center)
+        drawRoundRect(extendedColors.success, androidx.compose.ui.geometry.Offset(center - 18f, center - 34f), androidx.compose.ui.geometry.Size(36f, 62f), androidx.compose.ui.geometry.CornerRadius(18f, 18f))
+        drawArc(extendedColors.success, 0f, 180f, false, topLeft = androidx.compose.ui.geometry.Offset(center - 34f, center - 9f), size = androidx.compose.ui.geometry.Size(68f, 54f), style = Stroke(7f))
+        drawLine(extendedColors.success, androidx.compose.ui.geometry.Offset(center, center + 45f), androidx.compose.ui.geometry.Offset(center, center + 59f), 7f)
+        drawLine(extendedColors.success, androidx.compose.ui.geometry.Offset(center - 20f, center + 59f), androidx.compose.ui.geometry.Offset(center + 20f, center + 59f), 7f)
     }
 }
 
@@ -660,7 +805,7 @@ private fun VoiceConfirmationScreen(state: AppState.VoiceConfirmation, viewModel
             if (state.suggestedItem != null) {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Я услышал:", fontSize = 25.sp, textAlign = TextAlign.Center)
-                    Text("«${state.text}»", fontSize = 30.sp, color = Color(0xFF616161), textAlign = TextAlign.Center)
+                    Text("«${state.text}»", fontSize = 30.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                     Text("Вероятно, вы имели в виду:", fontSize = 25.sp, textAlign = TextAlign.Center)
                     ThingName(state.suggestedItem.name, fontSize = 36.sp)
                 }
@@ -670,13 +815,15 @@ private fun VoiceConfirmationScreen(state: AppState.VoiceConfirmation, viewModel
         }
         Button(
             viewModel::editVoiceConfirmation,
-            Modifier.fillMaxWidth().height(82.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB74D), contentColor = Color(0xFF3E2723)),
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeight),
+            role = PillRole.Warning,
+            icon = Icons.Filled.Edit,
         ) { Text("ИЗМЕНИТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
         Button(
             viewModel::acceptVoiceConfirmation,
-            Modifier.fillMaxWidth().height(82.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A), contentColor = Color.White),
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeight),
+            role = PillRole.Success,
+            icon = if (state.suggestedItem != null) Icons.Filled.Search else Icons.Filled.Check,
         ) { Text(if (state.suggestedItem != null) "ДА — ИСКАТЬ" else "ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
     }
 }
@@ -729,9 +876,9 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             state.name?.let { ThingName(it, fontSize = 30.sp) }
                 ?: state.item?.let { ThingName(it.name, fontSize = 30.sp) }
-                ?: Text("Фотография вещи", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                ?: Text("Фотография вещи", style = AppStyles.Headline, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp)); Text("Нужен доступ к камере", fontSize = 28.sp, textAlign = TextAlign.Center)
-            Button(requestPermission, Modifier.fillMaxWidth().height(60.dp)) { Text("Разрешить камеру", fontSize = 19.sp) }
+            Button(requestPermission, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight)) { Text("Разрешить камеру", fontSize = 19.sp) }
         }
     } else Box(Modifier.fillMaxSize()) {
         Column(
@@ -741,7 +888,7 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
             Box(Modifier.fillMaxWidth().background(Color.White.copy(.92f)).padding(12.dp), Alignment.Center) {
                 state.name?.let { ThingName(it, fontSize = 28.sp) }
                     ?: state.item?.let { ThingName(it.name, fontSize = 28.sp) }
-                    ?: Text("Фотография вещи", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    ?: Text("Фотография вещи", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
             }
             Spacer(Modifier.height(12.dp))
             // Nothing is drawn over this slot: every visible part of the 3:4
@@ -762,11 +909,11 @@ private fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permi
             Text(
                 buildAnnotatedString {
                     append("Нажмите ")
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary))
                     append("Громкость+")
                     pop()
                     append(" или ")
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary))
                     append("Громкость−")
                     pop()
                     append(" для фото")
@@ -791,7 +938,7 @@ private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, o
         val thingName = state.name ?: state.item?.name
         if (thingName != null) ThingName(thingName, fontSize = 26.sp)
         Box(
-            Modifier.fillMaxWidth().weight(1f).background(Color(0xFF202020)),
+            Modifier.fillMaxWidth().weight(1f).background(ReviewBackdrop),
             Alignment.Center,
         ) {
             Box(
@@ -808,8 +955,8 @@ private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, o
                 }
             }
         }
-        Button(onRedo, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB74D), contentColor = Color(0xFF3E2723))) { Text("ПЕРЕДЕЛАТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
-        Button(onDone, Modifier.fillMaxWidth().height(82.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A), contentColor = Color.White)) { Text("ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
+        Button(onRedo, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), role = PillRole.Warning, icon = Icons.Filled.Refresh) { Text("ПЕРЕДЕЛАТЬ", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
+        Button(onDone, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), role = PillRole.Success, icon = Icons.Filled.Check) { Text("ГОТОВО", fontSize = 23.sp, fontWeight = FontWeight.Bold) }
     }
 }
 
@@ -817,27 +964,66 @@ private fun PhotoReviewScreen(state: AppState.PhotoReview, onRedo: () -> Unit, o
 private fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainViewModel) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         when (val reason = state.reason) {
-            NewTagWaitReason.Initial -> Text("Поднесите одну новую метку", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-            NewTagWaitReason.NoTag -> Text("Новая метка не считалась. Поднесите одну метку и нажмите курок", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-            NewTagWaitReason.MultipleTags -> Text("Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            NewTagWaitReason.Initial -> Text("Поднесите одну новую метку", style = AppStyles.Headline, textAlign = TextAlign.Center)
+            NewTagWaitReason.NoTag -> Text("Новая метка не считалась. Поднесите одну метку и нажмите курок", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
+            NewTagWaitReason.MultipleTags -> Text("Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
             is NewTagWaitReason.AlreadyAssigned -> {
-                Text("Эта метка уже привязана к другой вещи. Считайте другую метку", fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text("Эта метка уже привязана к другой вещи. Считайте другую метку", style = AppStyles.Subtitle, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(16.dp))
                 ThingName(reason.item.name, fontSize = 30.sp)
             }
         }
         Spacer(Modifier.height(16.dp))
         ThingName(state.name, fontSize = 24.sp)
-        if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(64.dp)) { Text("ДЕМО: СЧИТАТЬ МЕТКУ", fontSize = 19.sp) }
+        if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact)) { Text("ДЕМО: СЧИТАТЬ МЕТКУ", fontSize = 19.sp) }
     }
 }
 
 @Composable
 private fun AddSuccessScreen(state: AppState.AddSuccess) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("Вещь добавлена", fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        AnimatedSuccessCheck()
+        Spacer(Modifier.height(18.dp))
+        Text("Вещь добавлена", style = AppStyles.ScreenTitle, textAlign = TextAlign.Center)
         Spacer(Modifier.height(18.dp))
         ThingName(state.name, fontSize = 32.sp)
+    }
+}
+
+@Composable
+private fun AnimatedSuccessCheck() {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        progress.animateTo(1f, tween(durationMillis = 450, easing = FastOutSlowInEasing))
+    }
+    val successColor = LocalExtendedColors.current.success
+    Box(Modifier.size(140.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val value = progress.value
+            drawCircle(color = successColor, radius = (size.minDimension / 2f) * value)
+            val checkAlpha = ((value - 0.5f) * 2f).coerceIn(0f, 1f)
+            if (checkAlpha > 0f) {
+                val unit = size.minDimension
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val stroke = (unit * 0.03f).coerceIn(10f, 16f)
+                val checkColor = Color.White.copy(alpha = checkAlpha)
+                drawLine(
+                    checkColor,
+                    Offset(cx - unit * 0.17f, cy + unit * 0.02f),
+                    Offset(cx - unit * 0.04f, cy + unit * 0.15f),
+                    stroke,
+                    StrokeCap.Round,
+                )
+                drawLine(
+                    checkColor,
+                    Offset(cx - unit * 0.04f, cy + unit * 0.15f),
+                    Offset(cx + unit * 0.17f, cy - unit * 0.13f),
+                    stroke,
+                    StrokeCap.Round,
+                )
+            }
+        }
     }
 }
 
@@ -853,11 +1039,11 @@ private fun ReaderPreparationScreen(state: AppState.ReaderPreparation) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Подготавливаю считыватель", fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text("Подготавливаю считыватель", style = AppStyles.Headline, textAlign = TextAlign.Center)
         Spacer(Modifier.height(16.dp))
         ThingName(state.item.name, fontSize = 30.sp)
         Spacer(Modifier.height(28.dp))
-        CircularProgressIndicator(modifier = Modifier.size(52.dp), strokeWidth = 5.dp)
+        ReaderPreparationStepper(state.stage)
         Spacer(Modifier.height(20.dp))
         Text(stage, fontSize = 24.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(28.dp))
@@ -866,10 +1052,64 @@ private fun ReaderPreparationScreen(state: AppState.ReaderPreparation) {
                 "Если не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\n" +
                 "Держите считыватель рядом с телефоном.",
             modifier = Modifier.fillMaxWidth(),
-            fontSize = 21.sp,
+            style = AppStyles.BodyMedium,
             lineHeight = 28.sp,
             textAlign = TextAlign.Center,
         )
+    }
+}
+
+@Composable
+private fun ReaderPreparationStepper(stage: ReaderPreparationStage) {
+    val steps = listOf(
+        ReaderPreparationStage.SEARCHING to "Ищу",
+        ReaderPreparationStage.CONNECTING to "Подключаю",
+        ReaderPreparationStage.PREPARING to "Готовлю",
+    )
+    val currentIndex = steps.indexOfFirst { it.first == stage }.coerceAtLeast(0)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        steps.forEachIndexed { index, (_, label) ->
+            if (index > 0) {
+                Box(
+                    Modifier.weight(1f)
+                        .padding(top = 11.5.dp)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(1.5.dp))
+                        .background(if (index <= currentIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                StepperCircle(completed = index < currentIndex, active = index == currentIndex)
+                Spacer(Modifier.height(6.dp))
+                val isCurrent = index == currentIndex
+                Text(
+                    label,
+                    style = AppStyles.Hint,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (isCurrent) FontWeight.Bold else null,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepperCircle(completed: Boolean, active: Boolean) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val successColor = LocalExtendedColors.current.success
+    val upcomingColor = MaterialTheme.colorScheme.surfaceVariant
+    Canvas(Modifier.size(26.dp)) {
+        when {
+            completed -> {
+                drawCircle(successColor)
+                drawCircle(Color.White, radius = 4.dp.toPx())
+            }
+            active -> {
+                drawCircle(primaryColor)
+                drawCircle(primaryColor.copy(alpha = 0.35f), radius = 10.dp.toPx(), style = Stroke(width = 6.dp.toPx()))
+            }
+            else -> drawCircle(upcomingColor)
+        }
     }
 }
 
@@ -964,7 +1204,7 @@ private fun SearchScreen(
             Text(
                 instruction,
                 modifier = Modifier.fillMaxWidth(),
-                fontSize = 21.sp,
+                style = AppStyles.BodyMedium,
                 lineHeight = 27.sp,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
@@ -974,7 +1214,7 @@ private fun SearchScreen(
         Spacer(Modifier.height(16.dp))
         Box(Modifier.fillMaxWidth().height(74.dp), contentAlignment = Alignment.Center) {
             if (onFinish != null) {
-                Button(onFinish, Modifier.fillMaxSize()) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
+                Button(onFinish, Modifier.fillMaxSize(), icon = Icons.Filled.Close) { Text("ЗАВЕРШИТЬ ПОИСК", fontSize = 21.sp) }
             }
         }
     }
@@ -1010,8 +1250,8 @@ private fun SignalReadout(animatedStrength: Float, rssi: Int?) {
             Text(
                 formatSearchRssi(rssi),
                 modifier = Modifier.fillMaxWidth(),
-                color = Color(0xFF546E7A),
-                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = AppStyles.Caption,
                 lineHeight = 18.sp,
                 textAlign = TextAlign.End,
             )
@@ -1029,19 +1269,60 @@ private fun SearchItemPhoto(item: Item, width: androidx.compose.ui.unit.Dp = 160
             .width(width)
             .aspectRatio(3f / 4f)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFFE0E0E0)),
+            .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
             Image(bitmap, contentDescription = item.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
-            Text("Фото отсутствует", fontSize = 20.sp)
+            PhotoPlaceholder(Modifier.fillMaxSize(), cornerRadius = 14.dp)
+        }
+    }
+}
+
+@Composable
+private fun PhotoPlaceholder(modifier: Modifier = Modifier, cornerRadius: Dp = Dimens.PhotoCorner) {
+    val backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+    val figureColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+    Box(
+        modifier.clip(RoundedCornerShape(cornerRadius)).background(backgroundColor),
+        Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val side = size.minDimension * 0.4f
+            val left = (size.width - side) / 2f
+            val top = (size.height - side) / 2f
+            val lineStyle = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            drawRoundRect(
+                color = figureColor,
+                topLeft = Offset(left, top),
+                size = Size(side, side),
+                cornerRadius = CornerRadius(side * 0.18f, side * 0.18f),
+                style = lineStyle,
+            )
+            drawCircle(
+                color = figureColor,
+                radius = side * 0.10f,
+                center = Offset(left + side * 0.33f, top + side * 0.33f),
+                style = lineStyle,
+            )
+            val mountains = Path().apply {
+                moveTo(left + side * 0.16f, top + side * 0.76f)
+                lineTo(left + side * 0.40f, top + side * 0.46f)
+                lineTo(left + side * 0.56f, top + side * 0.63f)
+                lineTo(left + side * 0.70f, top + side * 0.51f)
+                lineTo(left + side * 0.86f, top + side * 0.67f)
+            }
+            drawPath(mountains, figureColor, style = lineStyle)
         }
     }
 }
 
 @Composable
 private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifier) {
+    // DrawScope runs outside composition; resolve themed colors up front.
+    val trackColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurface.toArgb()
     Canvas(modifier) {
         val barWidth = size.width * 0.34f
         val barLeft = size.width * 0.58f - barWidth / 2f
@@ -1052,7 +1333,7 @@ private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifi
         val fillHeight = barHeight * signalStrength.coerceIn(0f, 1f)
 
         drawRoundRect(
-            color = Color(0xFFCFD8DC),
+            color = trackColor,
             topLeft = androidx.compose.ui.geometry.Offset(barLeft, barTop),
             size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
@@ -1076,7 +1357,7 @@ private fun LinearSignalMeter(signalStrength: Float, modifier: Modifier = Modifi
         }
 
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(38, 50, 56)
+            color = labelColor
             textAlign = android.graphics.Paint.Align.CENTER
             textSize = (size.width * 0.20f).coerceIn(30f, 52f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -1128,10 +1409,10 @@ private const val GEIGER_LOG_TAG = "GeigerClick"
 private val VOICE_INLINE_STATUSES = setOf("Слушаю", "Распознаю речь")
 
 private fun signalColor(strength: Float): Color = when {
-    strength <= 0f -> Color(0xFF546E7A)
-    strength < 0.35f -> Color(0xFF546E7A)
-    strength < 0.70f -> Color(0xFFE65100)
-    else -> Color(0xFF2E7D32)
+    strength <= 0f -> SignalWeak
+    strength < 0.35f -> SignalWeak
+    strength < 0.70f -> SignalMedium
+    else -> SignalStrong
 }
 
 @Composable
@@ -1141,13 +1422,19 @@ private fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
         Text("Нажмите кнопку с нужным действием", fontSize = 23.sp, textAlign = TextAlign.Center)
         Button(
             { viewModel.startSearching(item) },
-            Modifier.fillMaxWidth().height(60.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact),
+            role = PillRole.Success,
+            icon = Icons.Filled.Search,
         ) { Text("ИСКАТЬ ВЕЩЬ", fontSize = 19.sp) }
-        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ИЗМЕНИТЬ МЕТКУ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("ПЕРЕДЕЛАТЬ ФОТО", fontSize = 18.sp) }
-        OutlinedButton({ viewModel.delete(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text("УДАЛИТЬ", fontSize = 18.sp, color = Color(0xFFB71C1C)) }
+        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact)) { Text("ИЗМЕНИТЬ МЕТКУ", style = AppStyles.ButtonLabelSmall) }
+        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact), icon = Icons.Filled.Edit) { Text("ИЗМЕНИТЬ НАЗВАНИЕ", style = AppStyles.ButtonLabelSmall) }
+        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact), icon = Icons.Filled.Refresh) { Text("ПЕРЕДЕЛАТЬ ФОТО", style = AppStyles.ButtonLabelSmall) }
+        Button(
+            { viewModel.delete(item) },
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact),
+            role = PillRole.Danger,
+            icon = Icons.Filled.Delete,
+        ) { Text("УДАЛИТЬ", style = AppStyles.ButtonLabelSmall) }
         Spacer(Modifier.height(12.dp))
     }
 }
@@ -1157,10 +1444,10 @@ private fun ItemDetails(item: Item) {
     ThingName(item.name, fontSize = 30.sp)
     val bitmap = remember(item.photoPath) { item.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() } }
     Box(
-        Modifier.width(180.dp).aspectRatio(3f / 4f).clip(RoundedCornerShape(14.dp)).background(Color(0xFFE0E0E0)),
+        Modifier.width(180.dp).aspectRatio(3f / 4f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
         Alignment.Center,
     ) {
-        if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото отсутствует", fontSize = 22.sp)
+        if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else PhotoPlaceholder(Modifier.fillMaxSize(), cornerRadius = 14.dp)
     }
 }
 
@@ -1168,26 +1455,28 @@ private fun ItemDetails(item: Item) {
 private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel: MainViewModel) {
     val listState = rememberLazyListState()
     val screenTouchEnabled = LocalScreenTouchEnabled.current
+    val extendedColors = LocalExtendedColors.current
+    val scrollbarColor = MaterialTheme.colorScheme.outline
     LaunchedEffect(state.selectedIndex, items.size) { if (items.isNotEmpty()) listState.animateScrollToItem(state.selectedIndex.coerceIn(0, items.lastIndex)) }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            Text("Каталог", modifier = Modifier.fillMaxWidth(), fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Text("Каталог", modifier = Modifier.fillMaxWidth(), style = AppStyles.Headline, textAlign = TextAlign.Center)
             Text(
                 buildAnnotatedString {
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary))
                     append("Громкость+")
                     pop()
                     append(" — вверх    ")
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF1565C0)))
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary))
                     append("Громкость−")
                     pop()
                     append(" — вниз")
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                fontSize = 16.sp,
+                style = AppStyles.Hint,
                 textAlign = TextAlign.Center,
             )
-            Text("Нажмите на вещь", modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), fontSize = 16.sp, textAlign = TextAlign.Center)
+            Text("Нажмите на вещь", modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), style = AppStyles.Hint, textAlign = TextAlign.Center)
             Box(Modifier.weight(1f)) {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
                     itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
@@ -1196,18 +1485,27 @@ private fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel:
                                 onClick = { viewModel.selectCatalogItem(item) },
                                 screenTouchEnabled = screenTouchEnabled,
                             ),
-                            colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) Color(0xFFE3F2FD) else Color.White),
+                            colors = CardDefaults.cardColors(containerColor = if (index == state.selectedIndex) MaterialTheme.colorScheme.primaryContainer else extendedColors.cardSurface),
                         ) {
                             ItemPreview(item, false, Modifier.padding(10.dp))
                         }
                     }
                 }
-                if (items.isEmpty()) Text("Каталог пуст", modifier = Modifier.align(Alignment.Center), fontSize = 24.sp)
+                if (items.isEmpty()) {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        PhotoPlaceholder(Modifier.size(120.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text("Каталог пуст", style = AppStyles.Headline, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 if (items.size > 1) Canvas(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(8.dp).padding(vertical = 6.dp)) {
                     val track = size.height
                     val thumb = (track / items.size).coerceAtLeast(28f)
                     val offset = if (items.size <= 1) 0f else (track - thumb) * state.selectedIndex / (items.size - 1).toFloat()
-                    drawRoundRect(Color(0xFF78909C), androidx.compose.ui.geometry.Offset(0f, offset), androidx.compose.ui.geometry.Size(size.width, thumb), androidx.compose.ui.geometry.CornerRadius(size.width, size.width))
+                    drawRoundRect(scrollbarColor, androidx.compose.ui.geometry.Offset(0f, offset), androidx.compose.ui.geometry.Size(size.width, thumb), androidx.compose.ui.geometry.CornerRadius(size.width, size.width))
                 }
             }
             Text("${if (items.isEmpty()) 0 else state.selectedIndex + 1} из ${items.size}", modifier = Modifier.fillMaxWidth().padding(top = 8.dp), fontSize = 19.sp, textAlign = TextAlign.Center)
@@ -1224,14 +1522,14 @@ private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifie
                 .width(if (large) 180.dp else 102.dp)
                 .aspectRatio(3f / 4f)
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFFE0E0E0)),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             Alignment.Center,
-        ) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Text("Фото", fontSize = if (large) 22.sp else 16.sp) }
+        ) { if (bitmap != null) Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else PhotoPlaceholder(Modifier.fillMaxSize(), cornerRadius = 12.dp) }
         ThingName(item.name, modifier = Modifier.weight(1f), fontSize = if (large) 30.sp else 24.sp, textAlign = TextAlign.Start)
     }
 }
 
-@Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Spacer(Modifier.height(20.dp)); Button(onNext, Modifier.fillMaxWidth().height(60.dp)) { Text("ПОНЯТНО", fontSize = 20.sp) } } }
+@Composable private fun MessageScreen(text: String, onNext: () -> Unit) { Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(text, fontSize = 28.sp, textAlign = TextAlign.Center); Spacer(Modifier.height(20.dp)); Button(onNext, Modifier.fillMaxWidth().height(Dimens.PillButtonHeight), icon = Icons.Filled.Check) { Text("ПОНЯТНО", style = AppStyles.ButtonLabel) } } }
 @Composable
 private fun ConfirmScreen(
     text: String,
@@ -1244,7 +1542,7 @@ private fun ConfirmScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(8.dp))
-        Text(text, fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(text, style = AppStyles.Headline, textAlign = TextAlign.Center)
         if (!highlightedTitle.isNullOrBlank()) {
             Spacer(Modifier.height(18.dp))
             ThingName(highlightedTitle, fontSize = 38.sp)
@@ -1252,12 +1550,15 @@ private fun ConfirmScreen(
         Spacer(Modifier.height(32.dp))
         Button(
             onConfirm,
-            Modifier.fillMaxWidth().height(96.dp),
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeight),
+            role = PillRole.Success,
+            icon = Icons.Filled.Check,
         ) { Text("ПОДТВЕРДИТЬ", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
         Spacer(Modifier.weight(1f))
         TextButton(
             onCancel,
-            Modifier.fillMaxWidth().height(96.dp),
+            Modifier.fillMaxWidth().height(Dimens.PillButtonHeight),
+            icon = Icons.Filled.Close,
         ) { Text("ОТМЕНА", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
     }
 }
@@ -1275,6 +1576,7 @@ private fun ServiceScreen(
     syncSettings: ru.rfidhunter.app.data.SyncSettingsState,
 ) {
     val fake = viewModel.fakeGateway
+    val extendedColors = LocalExtendedColors.current
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
     var diagnosticsEnabled by remember { mutableStateOf(viewModel.diagnosticsEnabled()) }
@@ -1300,7 +1602,7 @@ private fun ServiceScreen(
         syncSettings.lastSuccessAt?.let { timestamp ->
             Text("Последняя успешная отправка: ${SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))}")
         }
-        syncSettings.lastError?.let { Text("Ошибка синхронизации: $it", color = Color(0xFFB00020)) }
+        syncSettings.lastError?.let { Text("Ошибка синхронизации: $it", color = MaterialTheme.colorScheme.error) }
         OutlinedTextField(
             value = backupEndpoint,
             onValueChange = { backupEndpoint = it },
@@ -1318,14 +1620,14 @@ private fun ServiceScreen(
         Text(
             if (syncSettings.registered) "Устройство зарегистрировано (${syncSettings.scopes.sorted().joinToString(", ")})"
             else "Устройство не зарегистрировано",
-            color = if (syncSettings.registered) Color(0xFF2E7D32) else Color(0xFFB00020),
+            color = if (syncSettings.registered) extendedColors.success else MaterialTheme.colorScheme.error,
             fontWeight = FontWeight.Bold,
         )
         Text(
             "Резервирование необязательно: без учетной записи каталог хранится только на телефоне. Для нового телефона используйте тот же пароль.",
             fontSize = 14.sp,
         )
-        Text("Пароль не отправляется в резервной копии и не восстанавливается сервером — сохраните его отдельно.", fontSize = 14.sp, color = Color(0xFF8A1C1C))
+        Text("Пароль не отправляется в резервной копии и не восстанавливается сервером — сохраните его отдельно.", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
         OutlinedTextField(
             value = accountPassword,
             onValueChange = { accountPassword = it },
@@ -1388,7 +1690,7 @@ private fun ServiceScreen(
             Text("Найдено устройств: ${devices.size}", fontWeight = FontWeight.Bold)
             devices.forEach { device ->
                 val selected = viewModel.readerAddress().equals(device.macAddress, true)
-                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (selected) Color(0xFFE8F5E9) else Color.White)) {
+                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (selected) extendedColors.successContainer else extendedColors.cardSurface)) {
                     Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(device.name + if (device.likelyHoneywell) " (IH25?)" else "", fontWeight = FontWeight.Bold)
                         Text("${device.macAddress}   RSSI ${device.rssi} dBm")
