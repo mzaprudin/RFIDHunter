@@ -7,6 +7,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -21,10 +22,15 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -235,41 +241,43 @@ fun RfidHunterApp(
                         ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads, pendingSyncCount, syncSettings)
                     } else {
                         UserScreen {
-                            when (val current = state) {
-                                AppState.Idle -> IdleScreen(
-                                    viewModel,
-                                    connection,
-                                    readerScanState,
-                                    readerReady,
-                                    readerDiagnostic,
-                                    items,
-                                    triggerOverlayAvailable,
-                                    requestTriggerOverlayPermission,
-                                )
-                                AppState.InitialChecking -> StatusScreen("Проверяю метку…")
-                                is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, current.pendingEpc, current.renameItem), voiceBackend, viewModel::openCatalog)
-                                is AppState.Camera -> CameraScreen(current, viewModel, cameraPermission, requestCameraPermission)
-                                is AppState.PhotoReview -> PhotoReviewScreen(current, viewModel::redoPhoto, viewModel::acceptPhoto)
-                                is AppState.WaitForNewTag -> WaitForTagScreen(current, viewModel)
-                                is AppState.AddSuccess -> AddSuccessScreen(current)
-                                is AppState.VoiceListening -> VoiceListeningScreen(current, voiceBackend, viewModel::openCatalog)
-                                is AppState.VoiceConfirmation -> VoiceConfirmationScreen(current, viewModel)
-                                AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
-                                is AppState.ReaderPreparation -> ReaderPreparationScreen(current)
-                                is AppState.SearchTarget -> SearchTargetScreen(current, readerReady || viewModel.fakeGateway != null)
-                                is AppState.RfidSearch -> SearchProgressScreen(current, readerReady || viewModel.fakeGateway != null)
-                                is AppState.SearchPaused -> SearchPausedScreen(current, readerReady || viewModel.fakeGateway != null, viewModel)
-                                is AppState.ItemCard -> ItemCardScreen(current.item, viewModel)
-                                is AppState.Catalog -> CatalogScreen(current, items, viewModel)
-                                is AppState.MultipleTags -> MessageScreen(current.message, viewModel::openCatalog)
-                                is AppState.Message -> ConfirmScreen(
-                                    text = current.text,
-                                    highlightedTitle = current.highlightedTitle,
-                                    onConfirm = { viewModel.confirmMessage(true) },
-                                    onCancel = { viewModel.confirmMessage(false) },
-                                )
-                                AppState.Service -> Unit
-                                is AppState.Error -> MessageScreen(current.text, viewModel::closeService)
+                            ScreenTransition(state) { target ->
+                                when (val screen = target) {
+                                    AppState.Idle -> IdleScreen(
+                                        viewModel,
+                                        connection,
+                                        readerScanState,
+                                        readerReady,
+                                        readerDiagnostic,
+                                        items,
+                                        triggerOverlayAvailable,
+                                        requestTriggerOverlayPermission,
+                                    )
+                                    AppState.InitialChecking -> StatusScreen("Проверяю метку…")
+                                    is AppState.AddName -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.ADD, screen.pendingEpc, screen.renameItem), voiceBackend, viewModel::openCatalog)
+                                    is AppState.Camera -> CameraScreen(screen, viewModel, cameraPermission, requestCameraPermission)
+                                    is AppState.PhotoReview -> PhotoReviewScreen(screen, viewModel::redoPhoto, viewModel::acceptPhoto)
+                                    is AppState.WaitForNewTag -> WaitForTagScreen(screen, viewModel)
+                                    is AppState.AddSuccess -> AddSuccessScreen(screen)
+                                    is AppState.VoiceListening -> VoiceListeningScreen(screen, voiceBackend, viewModel::openCatalog)
+                                    is AppState.VoiceConfirmation -> VoiceConfirmationScreen(screen, viewModel)
+                                    AppState.AskSearchCommand -> VoiceListeningScreen(AppState.VoiceListening(VoiceInputMode.SEARCH), voiceBackend, viewModel::openCatalog)
+                                    is AppState.ReaderPreparation -> ReaderPreparationScreen(screen)
+                                    is AppState.SearchTarget -> SearchTargetScreen(screen, readerReady || viewModel.fakeGateway != null)
+                                    is AppState.RfidSearch -> SearchProgressScreen(screen, readerReady || viewModel.fakeGateway != null)
+                                    is AppState.SearchPaused -> SearchPausedScreen(screen, readerReady || viewModel.fakeGateway != null, viewModel)
+                                    is AppState.ItemCard -> ItemCardScreen(screen.item, viewModel)
+                                    is AppState.Catalog -> CatalogScreen(screen, items, viewModel)
+                                    is AppState.MultipleTags -> MessageScreen(screen.message, viewModel::openCatalog)
+                                    is AppState.Message -> ConfirmScreen(
+                                        text = screen.text,
+                                        highlightedTitle = screen.highlightedTitle,
+                                        onConfirm = { viewModel.confirmMessage(true) },
+                                        onCancel = { viewModel.confirmMessage(false) },
+                                    )
+                                    AppState.Service -> Unit
+                                    is AppState.Error -> MessageScreen(screen.text, viewModel::closeService)
+                                }
                             }
                         }
                     }
@@ -286,6 +294,24 @@ private val LocalScreenTouchEnabled = staticCompositionLocalOf { true }
 @Composable
 private fun UserScreen(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) { content() }
+}
+
+@Composable
+private fun ScreenTransition(state: AppState, content: @Composable (AppState) -> Unit) {
+    AnimatedContent(
+        targetState = state,
+        // Logical screen identity: excludes RSSI, voice progress flags,
+        // selected catalogue row — high-frequency updates never re-run the fade.
+        contentKey = { touchGateKey(it) },
+        transitionSpec = {
+            // The camera exits quickly: its viewfinder keeps streaming while
+            // the outgoing slot is composed and photo decode already loads
+            // the main thread during Camera -> PhotoReview.
+            val exitDuration = if (initialState is AppState.Camera) 70 else 160
+            fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(exitDuration))
+        },
+        label = "screen-transition",
+    ) { target -> content(target) }
 }
 
 private enum class PillRole { Primary, Success, Warning, Danger }
@@ -323,12 +349,23 @@ private fun Button(
     content: @Composable RowScope.() -> Unit,
 ) {
     val screenTouchEnabled = LocalScreenTouchEnabled.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = tween(90),
+        label = "pill-press",
+    )
     MaterialButton(
         onClick = {},
-        modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
+        // Input stays outside the scaled layer: the touch target never shrinks.
+        modifier = modifier
+            .resilientButtonInput(onClick, enabled, screenTouchEnabled)
+            .graphicsLayer { scaleX = scale; scaleY = scale },
         enabled = enabled,
         colors = pillButtonColors(role),
         shape = shape,
+        interactionSource = interactionSource,
     ) {
         PillButtonLeadingIcon(icon)
         content()
@@ -345,11 +382,22 @@ private fun OutlinedButton(
     content: @Composable RowScope.() -> Unit,
 ) {
     val screenTouchEnabled = LocalScreenTouchEnabled.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = tween(90),
+        label = "pill-press",
+    )
     MaterialOutlinedButton(
         onClick = {},
-        modifier = modifier.resilientButtonInput(onClick, enabled, screenTouchEnabled),
+        // Input stays outside the scaled layer: the touch target never shrinks.
+        modifier = modifier
+            .resilientButtonInput(onClick, enabled, screenTouchEnabled)
+            .graphicsLayer { scaleX = scale; scaleY = scale },
         enabled = enabled,
         shape = shape,
+        interactionSource = interactionSource,
     ) {
         PillButtonLeadingIcon(icon)
         content()
