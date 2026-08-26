@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -104,16 +105,16 @@ private fun SearchScreen(
         Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
-            Text(stringResource(R.string.search_title), fontSize = 29.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.search_title), style = AppStyles.ScreenTitle, textAlign = TextAlign.Center)
         }
-        Box(Modifier.fillMaxWidth().height(78.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().height(72.dp), contentAlignment = Alignment.Center) {
             // Match the item-card title treatment and size so the selected
             // thing remains equally legible while searching.
-            ThingName(item.name, fontSize = 30.sp)
+            ThingName(item.name, fontSize = 30.sp, includePrefix = false)
         }
         Column(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(
@@ -125,11 +126,11 @@ private fun SearchScreen(
                 // card preview. The vertical meter uses the otherwise-unused
                 // space beside it instead of shrinking the photo into a wide
                 // horizontal slot.
-                SearchItemPhoto(item, width = 200.dp)
+                SearchItemPhoto(item, width = 180.dp)
                 Spacer(Modifier.width(12.dp))
                 LinearSignalMeter(
                     animatedVisualStrength,
-                    Modifier.width(112.dp).height(267.dp),
+                    Modifier.weight(1f).height(240.dp),
                 )
             }
             Spacer(Modifier.height(12.dp))

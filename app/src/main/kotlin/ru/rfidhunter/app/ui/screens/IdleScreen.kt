@@ -51,7 +51,6 @@ import ru.rfidhunter.app.ui.components.OutlinedButton
 import ru.rfidhunter.app.ui.components.TextButton
 import ru.rfidhunter.app.ui.theme.AppStyles
 import ru.rfidhunter.app.ui.theme.Dimens
-import ru.rfidhunter.app.ui.theme.LocalExtendedColors
 
 private data class ReaderStatusUi(val text: String, val dotColor: Color, val inProgress: Boolean)
 
@@ -66,34 +65,18 @@ private fun ReaderStatusCard(status: ReaderStatusUi) {
             modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (status.inProgress) PulsingDot(status.dotColor) else StaticDot(status.dotColor)
+            val transition = rememberInfiniteTransition(label = "reader-status")
+            val alpha by transition.animateFloat(1f, 0.35f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "reader-status-pulse")
+            Box(
+                Modifier.size(12.dp)
+                    .graphicsLayer { this.alpha = if (status.inProgress) alpha else 1f }
+                    .clip(CircleShape)
+                    .background(status.dotColor),
+            )
             Spacer(Modifier.width(10.dp))
             Text(status.text, style = AppStyles.BodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
-}
-
-/** The pulse animation only runs while the reader is actually busy. */
-@Composable
-private fun PulsingDot(color: Color) {
-    val transition = rememberInfiniteTransition(label = "reader-status")
-    val alpha by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.35f,
-        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
-        label = "reader-status-pulse",
-    )
-    Box(
-        Modifier.size(12.dp)
-            .graphicsLayer { this.alpha = alpha }
-            .clip(CircleShape)
-            .background(color),
-    )
-}
-
-@Composable
-private fun StaticDot(color: Color) {
-    Box(Modifier.size(12.dp).clip(CircleShape).background(color))
 }
 
 @Composable
@@ -112,57 +95,27 @@ internal fun IdleScreen(
         (connection == ConnectionState.CONNECTED && !readerReady)
     val showInstruction = !connectionInProgress && (readerReady || viewModel.fakeGateway != null)
     val scanningInstruction = stringResource(R.string.idle_scanning_instruction)
+    val connectingInstruction = stringResource(R.string.idle_connecting_instruction)
+    val preparingInstruction = stringResource(R.string.idle_preparing_instruction)
     val disconnectedInstruction = stringResource(R.string.idle_disconnected_instruction)
+    val readerStatus = when {
+        scanState == ReaderScanState.SCANNING -> ReaderStatusUi("Поиск считывателя", MaterialTheme.colorScheme.primary, true)
+        connection == ConnectionState.CONNECTING -> ReaderStatusUi("Подключение к IH25", MaterialTheme.colorScheme.primary, true)
+        connection == ConnectionState.CONNECTED && !readerReady -> ReaderStatusUi("Подготовка считывателя", MaterialTheme.colorScheme.primary, true)
+        else -> null
+    }
     Column(
         Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        val extendedColors = LocalExtendedColors.current
-        // Single source of truth for the status card and the central slot.
-        // Branch order mirrors the legacy readerStatus text mapping exactly,
-        // so the dot color can never contradict the shown text. The ready
-        // state is new: the old UI hid the status once the reader was ready.
-        val readerStatusUi = when {
-            connection == ConnectionState.CONNECTING -> ReaderStatusUi(
-                "Подключаю считыватель…",
-                MaterialTheme.colorScheme.primary,
-                true,
-            )
-            connection == ConnectionState.ERROR -> ReaderStatusUi(
-                "Не удалось подключиться",
-                MaterialTheme.colorScheme.error,
-                false,
-            )
-            scanState == ReaderScanState.SCANNING -> ReaderStatusUi(
-                "Ищу считыватель рядом…",
-                MaterialTheme.colorScheme.primary,
-                true,
-            )
-            scanState == ReaderScanState.COMPLETE && diagnostic?.contains("Найдено устройств: 0") == true ->
-                ReaderStatusUi("Считыватель не найден", MaterialTheme.colorScheme.error, false)
-            scanState == ReaderScanState.COMPLETE && diagnostic?.startsWith("Найдено устройств:") == true ->
-                ReaderStatusUi("Найдено несколько устройств", MaterialTheme.colorScheme.error, false)
-            connection == ConnectionState.CONNECTED && readerReady ->
-                ReaderStatusUi("Считыватель готов", extendedColors.success, false)
-            connection == ConnectionState.CONNECTED -> ReaderStatusUi(
-                "Готовлю считыватель…",
-                MaterialTheme.colorScheme.primary,
-                true,
-            )
-            viewModel.fakeGateway != null -> ReaderStatusUi("Демо-режим без считывателя", extendedColors.warning, false)
-            else -> ReaderStatusUi("Считыватель отключён", MaterialTheme.colorScheme.error, false)
-        }
         Text(
             stringResource(R.string.idle_title),
             modifier = Modifier.fillMaxWidth().height(52.dp),
             style = AppStyles.ScreenTitle,
             textAlign = TextAlign.Center,
         )
-        ReaderStatusCard(readerStatusUi)
-        // Keep one stable central status slot. The old layout rendered a
-        // technical status above the instruction, which made the instruction
-        // jump vertically as connection state changed.
+        if (readerStatus != null) ReaderStatusCard(readerStatus)
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -173,10 +126,14 @@ internal fun IdleScreen(
                     stringResource(R.string.idle_trigger_hint)
                 } else if (scanState == ReaderScanState.SCANNING) {
                     scanningInstruction
+                } else if (connection == ConnectionState.CONNECTING) {
+                    connectingInstruction
+                } else if (connection == ConnectionState.CONNECTED) {
+                    preparingInstruction
                 } else if (connection == ConnectionState.DISCONNECTED && viewModel.fakeGateway == null) {
                     disconnectedInstruction
                 } else {
-                    readerStatusUi.text
+                    disconnectedInstruction
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
                 fontSize = if (showInstruction) 24.sp else if (scanState == ReaderScanState.SCANNING || connection == ConnectionState.DISCONNECTED) 20.sp else 22.sp,

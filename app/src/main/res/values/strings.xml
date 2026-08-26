@@ -4,7 +4,9 @@
     <!-- Idle -->
     <string name="idle_title">Искатель вещей</string>
     <string name="idle_trigger_hint">Нажмите курок чтобы добавить метку или начать поиск</string>
-    <string name="idle_scanning_instruction">Ищу считыватель рядом…\n\nПроверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+    <string name="idle_scanning_instruction">Проверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+    <string name="idle_connecting_instruction">Проверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
+    <string name="idle_preparing_instruction">Проверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
     <string name="idle_disconnected_instruction">Считыватель отключён.\n\nПроверьте, мигает ли слева синяя лампочка.\nЕсли не мигает, удерживайте кнопку питания справа на IH25 до звукового сигнала.\nДержите считыватель рядом с телефоном.</string>
     <string name="idle_allow_trigger_action">РАЗРЕШИТЬ ЗАПУСК ПО КУРКУ</string>
     <string name="idle_open_catalog_format">Открыть каталог (%1$d)</string>
@@ -53,7 +55,8 @@
     <string name="wait_tag_initial_hint">Поднесите одну новую метку</string>
     <string name="wait_tag_no_tag_hint">Новая метка не считалась. Поднесите одну метку и нажмите курок</string>
     <string name="wait_tag_multiple_tags_hint">Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону</string>
-    <string name="wait_tag_already_assigned_hint">Эта метка уже привязана к другой вещи. Считайте другую метку</string>
+    <string name="wait_tag_already_assigned_title">Эта метка уже записана на другую вещь:</string>
+    <string name="wait_tag_already_assigned_action">Считайте другую метку</string>
 
     <!-- AddSuccess -->
     <string name="add_success_title">Вещь добавлена</string>

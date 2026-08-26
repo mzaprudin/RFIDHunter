@@ -43,9 +43,21 @@ internal fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainView
             NewTagWaitReason.NoTag -> Text(stringResource(R.string.wait_tag_no_tag_hint), style = AppStyles.Subtitle, textAlign = TextAlign.Center)
             NewTagWaitReason.MultipleTags -> Text(stringResource(R.string.wait_tag_multiple_tags_hint), style = AppStyles.Subtitle, textAlign = TextAlign.Center)
             is NewTagWaitReason.AlreadyAssigned -> {
-                Text(stringResource(R.string.wait_tag_already_assigned_hint), style = AppStyles.Subtitle, textAlign = TextAlign.Center)
+                Text(
+                    stringResource(R.string.wait_tag_already_assigned_title),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = AppStyles.Subtitle,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(12.dp))
+                ThingName(reason.item.name, fontSize = 30.sp, includePrefix = false)
                 Spacer(Modifier.height(16.dp))
-                ThingName(reason.item.name, fontSize = 30.sp)
+                Text(
+                    stringResource(R.string.wait_tag_already_assigned_action),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = AppStyles.Subtitle,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
         Spacer(Modifier.height(16.dp))

@@ -59,26 +59,25 @@ import ru.rfidhunter.app.ui.components.PillRole
 import ru.rfidhunter.app.ui.components.ThingName
 import ru.rfidhunter.app.ui.components.catalogCardTapInput
 import ru.rfidhunter.app.ui.theme.AppStyles
-import ru.rfidhunter.app.ui.theme.Dimens
 import ru.rfidhunter.app.ui.theme.LocalExtendedColors
 
 @Composable
 internal fun ItemCardScreen(item: Item, viewModel: MainViewModel) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ItemDetails(item)
-        Text(stringResource(R.string.item_card_actions_hint), fontSize = 23.sp, textAlign = TextAlign.Center)
+        Text(stringResource(R.string.item_card_actions_hint), modifier = Modifier.fillMaxWidth(), fontSize = 21.sp, textAlign = TextAlign.Center)
         Button(
             { viewModel.startSearching(item) },
-            Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact),
+            Modifier.fillMaxWidth().height(60.dp),
             role = PillRole.Success,
             icon = Icons.Filled.Search,
         ) { Text(stringResource(R.string.item_card_search_action), fontSize = 19.sp) }
-        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact)) { Text(stringResource(R.string.item_card_change_tag_action), style = AppStyles.ButtonLabelSmall) }
-        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact), icon = Icons.Filled.Edit) { Text(stringResource(R.string.item_card_rename_action), style = AppStyles.ButtonLabelSmall) }
-        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact), icon = Icons.Filled.Refresh) { Text(stringResource(R.string.item_card_retake_photo_action), style = AppStyles.ButtonLabelSmall) }
+        OutlinedButton({ viewModel.changeTag(item) }, Modifier.fillMaxWidth().height(60.dp)) { Text(stringResource(R.string.item_card_change_tag_action), style = AppStyles.ButtonLabelSmall) }
+        OutlinedButton({ viewModel.rename(item) }, Modifier.fillMaxWidth().height(60.dp), icon = Icons.Filled.Edit) { Text(stringResource(R.string.item_card_rename_action), style = AppStyles.ButtonLabelSmall) }
+        OutlinedButton({ viewModel.retakePhoto(item) }, Modifier.fillMaxWidth().height(60.dp), icon = Icons.Filled.Refresh) { Text(stringResource(R.string.item_card_retake_photo_action), style = AppStyles.ButtonLabelSmall) }
         Button(
             { viewModel.delete(item) },
-            Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact),
+            Modifier.fillMaxWidth().height(60.dp),
             role = PillRole.Danger,
             icon = Icons.Filled.Delete,
         ) { Text(stringResource(R.string.item_card_delete_action), style = AppStyles.ButtonLabelSmall) }
@@ -128,7 +127,7 @@ internal fun CatalogScreen(state: AppState.Catalog, items: List<Item>, viewModel
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
                     itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
                         Card(
-                            Modifier.fillMaxWidth().height(150.dp).catalogCardTapInput(
+                            Modifier.fillMaxWidth().height(170.dp).catalogCardTapInput(
                                 onClick = { viewModel.selectCatalogItem(item) },
                                 screenTouchEnabled = screenTouchEnabled,
                             ),
@@ -172,6 +171,16 @@ private fun ItemPreview(item: Item, large: Boolean, modifier: Modifier = Modifie
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             Alignment.Center,
         ) { if (bitmap != null) Image(bitmap, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else PhotoPlaceholder(Modifier.fillMaxSize(), cornerRadius = 12.dp) }
-        ThingName(item.name, modifier = Modifier.weight(1f), fontSize = if (large) 30.sp else 24.sp, textAlign = TextAlign.Start)
+        Text(
+            item.name,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = if (large) 30.sp else 24.sp,
+            fontWeight = FontWeight.Bold,
+            lineHeight = if (large) 36.sp else 30.sp,
+            maxLines = if (large) 3 else 4,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign = TextAlign.Start,
+        )
     }
 }

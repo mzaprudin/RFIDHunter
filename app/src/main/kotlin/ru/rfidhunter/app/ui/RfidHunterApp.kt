@@ -133,6 +133,7 @@ fun RfidHunterApp(
                         state is AppState.SearchTarget ||
                         state is AppState.RfidSearch ||
                         state is AppState.SearchPaused ||
+                        state is AppState.WaitForNewTag ||
                         (state is AppState.VoiceListening && announcement in VOICE_INLINE_STATUSES)
                 if (announcement.isNotBlank() && !hideAnnouncement) {
                     StatusBanner(announcement, Modifier.fillMaxWidth().padding(horizontal = Dimens.ScreenPaddingH))

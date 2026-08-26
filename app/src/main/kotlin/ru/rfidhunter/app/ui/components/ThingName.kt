@@ -23,8 +23,9 @@ internal fun ThingName(
     fontSize: androidx.compose.ui.unit.TextUnit = 30.sp,
     color: Color = MaterialTheme.colorScheme.primary,
     textAlign: TextAlign = TextAlign.Center,
+    includePrefix: Boolean = true,
 ) {
-    val prefix = stringResource(R.string.thing_name_prefix)
+    val prefix = if (includePrefix) stringResource(R.string.thing_name_prefix) else ""
     Text(
         buildAnnotatedString {
             append(prefix)
