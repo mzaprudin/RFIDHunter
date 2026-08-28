@@ -411,7 +411,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.rssi,
             current.signalStrength,
         )
-        emitEvent("Поиск приостановлен. Удерживайте курок для продолжения")
+        emitEvent("Поиск приостановлен. Для возобновления поиска нажмите и удерживайте курок дольше секунды")
     }
 
     private fun startInitialCheck() {
@@ -597,7 +597,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun changeTag(item: Item) {
         markActivity()
         _state.value = AppState.WaitForNewTag(item.name, item.photoPath, replacingItem = item)
-        emitEvent("Поднесите одну новую метку и нажмите курок")
+        emitEvent("Считайте новую метку и нажмите курок")
     }
 
     fun rename(item: Item) {
@@ -670,7 +670,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun redoPhoto() {
         markActivity()
         val current = _state.value as? AppState.PhotoReview ?: return
-        _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
+        _state.value = AppState.Camera(
+            current.context,
+            current.item,
+            current.name,
+            current.epc,
+            returnToReview = true,
+            previousPhotoPath = current.path,
+        )
     }
 
     fun acceptPhoto() {
@@ -708,9 +715,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             AppState.Idle -> Unit
             AppState.InitialChecking -> cancelInventoryAndGoIdle()
             is AppState.AddName -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
-            is AppState.Camera -> _state.value = if (current.context == PhotoContext.EDIT_EXISTING) current.item?.let(AppState::ItemCard) ?: AppState.Idle else AppState.Idle
+            is AppState.Camera -> when {
+                current.returnToReview && current.previousPhotoPath != null -> {
+                    _state.value = AppState.PhotoReview(
+                        path = current.previousPhotoPath,
+                        context = current.context,
+                        item = current.item,
+                        name = current.name,
+                        epc = current.epc,
+                    )
+                }
+                current.context == PhotoContext.EDIT_EXISTING -> _state.value = current.item?.let(AppState::ItemCard) ?: AppState.Idle
+                current.name != null -> _state.value = AppState.VoiceConfirmation(
+                    mode = VoiceInputMode.ADD,
+                    text = current.name,
+                    pendingEpc = current.epc,
+                )
+                else -> _state.value = AppState.Idle
+            }
             is AppState.PhotoReview -> _state.value = AppState.Camera(current.context, current.item, current.name, current.epc)
-            is AppState.WaitForNewTag -> _state.value = current.replacingItem?.let(AppState::ItemCard) ?: AppState.Idle
+            is AppState.WaitForNewTag -> when {
+                current.replacingItem != null -> _state.value = AppState.ItemCard(current.replacingItem)
+                current.photoPath != null -> _state.value = AppState.PhotoReview(
+                    path = current.photoPath,
+                    context = PhotoContext.MANUAL_NEW,
+                    name = current.name,
+                )
+                else -> _state.value = AppState.Idle
+            }
             is AppState.AddSuccess -> {
                 addSuccessJob?.cancel()
                 _state.value = AppState.Idle
@@ -719,7 +751,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 voiceJob?.cancel()
                 _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
             }
-            is AppState.VoiceConfirmation -> _state.value = current.renameItem?.let(AppState::ItemCard) ?: AppState.Idle
+            is AppState.VoiceConfirmation -> startVoiceInput(
+                mode = current.mode,
+                pendingEpc = current.pendingEpc,
+                renameItem = current.renameItem,
+            )
             is AppState.ReaderPreparation -> cancelReaderPreparationAndGoIdle()
             AppState.AskSearchCommand, is AppState.SearchTarget, is AppState.SearchPaused, is AppState.RfidSearch -> cancelInventoryAndGoIdle()
             is AppState.ItemCard, is AppState.Catalog, is AppState.MultipleTags -> _state.value = AppState.Idle

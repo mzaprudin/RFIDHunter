@@ -35,7 +35,15 @@ sealed interface AppState {
         val pendingEpc: String? = null,
         val renameItem: Item? = null,
     ) : AppState
-    data class Camera(val context: PhotoContext, val item: Item? = null, val name: String? = null, val epc: String? = null) : AppState
+    data class Camera(
+        val context: PhotoContext,
+        val item: Item? = null,
+        val name: String? = null,
+        val epc: String? = null,
+        /** True when this camera was reopened from an existing photo review. */
+        val returnToReview: Boolean = false,
+        val previousPhotoPath: String? = null,
+    ) : AppState
     data class PhotoReview(val path: String, val context: PhotoContext, val item: Item? = null, val name: String? = null, val epc: String? = null) : AppState
     data class WaitForNewTag(
         val name: String,

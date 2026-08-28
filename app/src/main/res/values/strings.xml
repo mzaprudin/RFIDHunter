@@ -52,8 +52,8 @@
     <string name="photo_review_done_action">ГОТОВО</string>
 
     <!-- WaitForTag -->
-    <string name="wait_tag_initial_hint">Поднесите одну новую метку</string>
-    <string name="wait_tag_no_tag_hint">Новая метка не считалась. Поднесите одну метку и нажмите курок</string>
+    <string name="wait_tag_initial_hint">Считайте новую метку</string>
+    <string name="wait_tag_no_tag_hint">Новая метка не считалась. Считайте новую метку и нажмите курок</string>
     <string name="wait_tag_multiple_tags_hint">Считалось несколько меток. Попробуйте отойти вместе с вещью в сторону</string>
     <string name="wait_tag_already_assigned_title">Эта метка уже записана на другую вещь:</string>
     <string name="wait_tag_already_assigned_action">Считайте другую метку</string>
@@ -76,7 +76,7 @@
     <string name="search_reader_disabled_hint">Считыватель отключён</string>
     <string name="search_target_hold_trigger_hint">Удерживайте курок, чтобы начать поиск</string>
     <string name="search_progress_move_hint">Перемещайте считыватель. Щелчки участятся рядом с вещью</string>
-    <string name="search_paused_resume_hint">Нажмите и продолжайте держать курок. Через секунду поиск возобновится</string>
+    <string name="search_paused_resume_hint">Для возобновления поиска нажмите и удерживайте курок дольше секунды</string>
     <string name="search_finish_action">ЗАВЕРШИТЬ ПОИСК</string>
     <string name="search_signal_strength_label">Сила сигнала</string>
 

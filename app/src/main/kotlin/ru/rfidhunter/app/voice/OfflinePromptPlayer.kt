@@ -56,7 +56,7 @@ class OfflinePromptPlayer(private val context: Context) {
             value == "как назвать вещь" || value.contains("назвать вещь заново") -> "voice/name_item.mp3"
             value.contains("сделайте фотографию") -> "voice/take_photo.mp3"
             value == "проверьте фотографию" -> "voice/check_photo.mp3"
-            value.contains("поднесите одну новую метку") -> "voice/bring_new_tag.mp3"
+            value.contains("считайте новую метку") -> "voice/bring_new_tag.mp3"
             value.contains("удерживайте курок") -> "voice/hold_trigger.mp3"
             value.startsWith("вещь найдена") -> "voice/item_found.mp3"
             value == "вещь добавлена" -> "voice/item_added.mp3"

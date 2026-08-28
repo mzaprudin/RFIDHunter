@@ -29,6 +29,7 @@ import ru.rfidhunter.app.R
 import ru.rfidhunter.app.ui.AppState
 import ru.rfidhunter.app.ui.MainViewModel
 import ru.rfidhunter.app.ui.NewTagWaitReason
+import ru.rfidhunter.app.ui.TriggerGif
 import ru.rfidhunter.app.ui.components.Button
 import ru.rfidhunter.app.ui.components.ThingName
 import ru.rfidhunter.app.ui.theme.AppStyles
@@ -61,6 +62,13 @@ internal fun WaitForTagScreen(state: AppState.WaitForNewTag, viewModel: MainView
             }
         }
         Spacer(Modifier.height(16.dp))
+        Box(
+            modifier = Modifier.fillMaxWidth().height(152.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            TriggerGif(modifier = Modifier.fillMaxWidth().height(148.dp))
+        }
+        Spacer(Modifier.height(12.dp))
         ThingName(state.name, fontSize = 24.sp)
         if (viewModel.fakeGateway != null) Button(viewModel::simulateTriggerPress, Modifier.fillMaxWidth().height(Dimens.PillButtonHeightCompact)) { Text(stringResource(R.string.demo_read_tag_button), fontSize = 19.sp) }
     }
