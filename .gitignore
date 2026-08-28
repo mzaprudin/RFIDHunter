@@ -16,3 +16,4 @@ app/src/hardware/assets/vosk-model
 third_party
 artifacts/
 server/data/
+.vscode/
