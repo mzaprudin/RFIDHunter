@@ -1,12 +1,15 @@
 package ru.rfidhunter.app
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -19,6 +22,7 @@ import androidx.compose.runtime.setValue
 import ru.rfidhunter.app.ui.RfidHunterApp
 import ru.rfidhunter.app.ui.MainViewModel
 import ru.rfidhunter.app.hardware.RfidForegroundService
+import ru.rfidhunter.app.domain.AppMode
 
 class MainActivity : ComponentActivity() {
     private var volumeDownCount = 0
@@ -31,9 +35,24 @@ class MainActivity : ComponentActivity() {
     private var bluetoothPermissionRequested = false
     private var notificationPermissionRequested = false
     private var readerServiceStarted = false
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            val app = application as RfidHunterApplication
+            app.screenInteractive = when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> false
+                Intent.ACTION_SCREEN_ON -> isScreenInteractive()
+                else -> isScreenInteractive()
+            }
+            activeViewModel?.onHostActivityStateChanged(app.mainActivityResumed && app.screenInteractive)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ContextCompat.registerReceiver(this, screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
         refreshPermissions()
         window.addFlags(
             android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
@@ -47,10 +66,12 @@ class MainActivity : ComponentActivity() {
             setTurnScreenOn(true)
         }
         setMaximumVolume()
-        startReaderServiceWhenPermitted()
         val vm: MainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
         activeViewModel = vm
-        if (blePermissionsReady()) vm.autoConnectSavedReader()
+        val app = application as RfidHunterApplication
+        app.screenInteractive = isScreenInteractive()
+        vm.onHostActivityStateChanged(app.mainActivityResumed && app.screenInteractive)
+        syncReaderServiceForMode()
         if (intent.getBooleanExtra(EXTRA_TRIGGER_ON_START, false)) {
             intent.removeExtra(EXTRA_TRIGGER_ON_START)
             vm.onTriggerWakeIntent()
@@ -68,26 +89,38 @@ class MainActivity : ComponentActivity() {
                 requestCameraPermission = { requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA) },
                 requestMicrophonePermission = { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC) },
                 requestTriggerOverlayPermission = ::requestTriggerOverlayPermission,
+                onAppModeChanged = ::syncReaderServiceForMode,
             )
         }
     }
 
     override fun onResume() {
         super.onResume()
-        (application as RfidHunterApplication).mainActivityResumed = true
+        val app = application as RfidHunterApplication
+        app.mainActivityResumed = true
+        app.screenInteractive = isScreenInteractive()
         refreshPermissions()
-        startReaderServiceWhenPermitted()
-        if (blePermissionsReady()) activeViewModel?.autoConnectSavedReader()
+        syncReaderServiceForMode()
+        activeViewModel?.onHostActivityStateChanged(app.screenInteractive)
     }
 
     override fun onPause() {
-        (application as RfidHunterApplication).mainActivityResumed = false
+        val app = application as RfidHunterApplication
+        app.mainActivityResumed = false
+        activeViewModel?.onHostActivityStateChanged(false)
         super.onPause()
     }
 
     override fun onStop() {
-        (application as RfidHunterApplication).mainActivityResumed = false
+        val app = application as RfidHunterApplication
+        app.mainActivityResumed = false
+        activeViewModel?.onHostActivityStateChanged(false)
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(screenReceiver) }
+        super.onDestroy()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -180,6 +213,41 @@ class MainActivity : ComponentActivity() {
             Settings.canDrawOverlays(this)
     }
 
+    private fun isScreenInteractive(): Boolean =
+        (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive == true
+
+    private fun syncReaderServiceForMode() {
+        val app = application as RfidHunterApplication
+        if (app.appMode.value == AppMode.KIOSK) {
+            startReaderServiceWhenPermitted()
+        } else {
+            requestBluetoothPermissionsIfNeeded()
+            stopService(Intent(this, RfidForegroundService::class.java))
+            readerServiceStarted = false
+        }
+    }
+
+    private fun requestBluetoothPermissionsIfNeeded() {
+        if (BuildConfig.FLAVOR != "hardware") return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val ready = hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
+                hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            if (!ready && !bluetoothPermissionRequested) {
+                bluetoothPermissionRequested = true
+                requestPermissions(
+                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                    REQUEST_BLUETOOTH,
+                )
+            }
+        } else if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) &&
+            !hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION) &&
+            !bluetoothPermissionRequested
+        ) {
+            bluetoothPermissionRequested = true
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_LOCATION)
+        }
+    }
+
     private fun requestTriggerOverlayPermission() {
         if (BuildConfig.FLAVOR != "hardware" || Build.VERSION.SDK_INT < ANDROID_16_API_LEVEL) return
         startActivity(
@@ -193,6 +261,7 @@ class MainActivity : ComponentActivity() {
     /** Android 12+ requires runtime Bluetooth permission before a connected-device FGS can start. */
     private fun startReaderServiceWhenPermitted() {
         if (readerServiceStarted) return
+        if ((application as RfidHunterApplication).appMode.value != AppMode.KIOSK) return
         // The mock flavor does not access Bluetooth and should remain usable
         // without prompting for platform permissions.
         if (BuildConfig.FLAVOR != "hardware") {

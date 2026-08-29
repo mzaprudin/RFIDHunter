@@ -86,6 +86,8 @@ class FakeRfidGateway : RfidGateway {
 
     override suspend fun setBeeper(enabled: Boolean, frequency: Int, volume: Int) = Unit
 
+    override fun setAutoReconnect(enabled: Boolean) = Unit
+
     fun simulateTriggerPressed() {
         _triggerEvents.tryEmit(TriggerEvent.PRESSED)
     }

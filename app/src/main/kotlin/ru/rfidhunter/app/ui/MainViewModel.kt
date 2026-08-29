@@ -25,6 +25,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.domain.ConnectionState
+import ru.rfidhunter.app.domain.AppMode
 import ru.rfidhunter.app.domain.ReaderScanState
 import ru.rfidhunter.app.domain.RfidDevice
 import ru.rfidhunter.app.domain.moveCatalogIndex
@@ -63,6 +64,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val items = repository.items.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val pendingSyncCount = repository.pendingSyncCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val syncSettings = app.syncSettings.state
+    val appMode = app.appMode
     val gateway: RfidGateway = app.rfidGateway
     val fakeGateway: FakeRfidGateway? = gateway as? FakeRfidGateway
     val fakeVoice = FakeVoiceRecognizer()
@@ -111,9 +113,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var readerHasBeenReady = false
     private var recoveringDisconnectedReader = false
     private var automaticRecoverySuppressed = false
+    private var hostActivityActive = false
+    private var automationEnabled = false
 
     init {
         app.syncScheduler.enqueue()
+        viewModelScope.launch {
+            app.appMode.collect { applyReaderRuntimePolicy() }
+        }
         viewModelScope.launch {
             VoiceModelInstaller.installFromAssets(application)
             voiceEngine.prepare()
@@ -158,7 +165,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (
                     connection == ConnectionState.DISCONNECTED &&
                     readerHasBeenReady &&
-                    !automaticRecoverySuppressed
+                    !automaticRecoverySuppressed &&
+                    automationEnabled
                 ) {
                     recoveringDisconnectedReader = true
                     startAutomaticReaderSetup()
@@ -179,6 +187,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         markActivity()
         emitEvent("Подключаю считыватель")
         gateway.connect()
+    }
+
+    /** Called by MainActivity whenever visibility or screen interactivity changes. */
+    fun onHostActivityStateChanged(active: Boolean) {
+        hostActivityActive = active
+        applyReaderRuntimePolicy()
+    }
+
+    fun setAppMode(mode: AppMode) {
+        markActivity()
+        app.setAppMode(mode)
+        emitEvent(if (mode == AppMode.KIOSK) "Режим киоска включён" else "Обычный режим включён")
+    }
+
+    private fun applyReaderRuntimePolicy() {
+        val shouldEnable = app.appMode.value == AppMode.KIOSK || hostActivityActive
+        if (shouldEnable == automationEnabled) {
+            if (shouldEnable && !readerReady.value && !automaticRecoverySuppressed) startAutomaticReaderSetup()
+            return
+        }
+        automationEnabled = shouldEnable
+        if (shouldEnable) {
+            automaticRecoverySuppressed = false
+            gateway.setAutoReconnect(true)
+            if (!readerReady.value) startAutomaticReaderSetup()
+        } else {
+            automaticRecoverySuppressed = true
+            recoveringDisconnectedReader = false
+            automaticSetupJob?.cancel()
+            automaticSetupJob = null
+            scanJob?.cancel()
+            scanJob = null
+            gateway.setAutoReconnect(false)
+            viewModelScope.launch {
+                runCatching { stopInventoryOffMain() }
+                runCatching { gateway.disconnect() }
+            }
+        }
     }
 
     /** Start a five-second BLE scan; selecting a row persists its MAC. */
@@ -202,11 +248,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * The one BLE discovery/connection workflow shared by startup and the
-     * selected-item preparation screen.  Startup makes a single attempt;
-     * while [AppState.ReaderPreparation] is visible the same job retries.
+     * selected-item preparation screen. The job retries while the current
+     * runtime policy allows reader automation.
      */
     fun startAutomaticReaderSetup() {
-        if (fakeGateway != null || automaticSetupJob?.isActive == true) return
+        if (fakeGateway != null || !automationEnabled || automaticSetupJob?.isActive == true) return
         if (readerReady.value && connectionState.value == ConnectionState.CONNECTED) return
         // A manual Service scan must not overlap the automatic scan/connect
         // sequence. It is safe to cancel because this call is a newer request.
@@ -215,9 +261,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             markActivity()
             do {
                 val ready = automaticReaderSetupAttempt()
-                if (ready || !shouldContinueReaderSetup()) break
+                if (ready || !automationEnabled) break
                 delay(READER_SETUP_RETRY_DELAY_MS)
-            } while (isActive && !readerReady.value)
+            } while (isActive && automationEnabled && !readerReady.value)
         }.also { job ->
             job.invokeOnCompletion { if (automaticSetupJob === job) automaticSetupJob = null }
         }
@@ -225,63 +271,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun automaticReaderSetupAttempt(): Boolean {
         if (readerReady.value) {
+            gateway.setAutoReconnect(true)
             completeReaderPreparation()
             return true
         }
+        // The app-owned scan/connect loop is authoritative while looking for
+        // a reader. Re-enable the SDK reconnect only after reader readiness so
+        // the two mechanisms do not race each other during discovery.
+        gateway.setAutoReconnect(false)
         updateReaderPreparationStage(ReaderPreparationStage.SEARCHING)
         val savedAddress = gateway.readerAddress
         val devices = runCatching { gateway.scanDevices(READER_SCAN_TIMEOUT_MS) }.getOrElse {
             reportReaderSetupIssue("Не удалось найти считыватель")
             return false
         }
-        val likely = devices.filter { it.likelyHoneywell }
+        val likely = devices.filter { it.likelyHoneywell }.sortedByDescending { it.rssi }
         val savedCandidate = savedAddress.takeIf { it.isNotBlank() }
-            ?.let { address -> devices.firstOrNull { it.macAddress.equals(address, ignoreCase = true) } }
-        val candidate = when {
-            savedCandidate != null -> savedCandidate
-            // A stored address is still worth trying: an IH25 can be slower
-            // than Android's scan callback when waking from sleep.
-            savedAddress.isNotBlank() -> RfidDevice("Saved IH25", savedAddress, 0, true)
-            likely.size == 1 -> likely.single()
-            likely.isEmpty() && devices.size == 1 -> devices.single()
-            else -> null
+            ?.let { address -> likely.firstOrNull { it.macAddress.equals(address, ignoreCase = true) } }
+        val candidates = buildList {
+            savedCandidate?.let(::add)
+            if (savedAddress.isNotBlank() && savedCandidate == null) {
+                // A stored address is still worth trying: an IH25 can be slower
+                // than Android's scan callback when waking from sleep.
+                add(RfidDevice("Saved IH25", savedAddress, 0, true))
+            }
+            likely.filterNot { it.macAddress.equals(savedAddress, ignoreCase = true) }.forEach(::add)
         }
-        if (candidate == null) {
-            reportReaderSetupIssue(
-                if (likely.size > 1 || devices.size > 1) {
-                    "Рядом несколько устройств. Откройте сервис для выбора считывателя"
-                } else {
-                    "Считыватель не найден. Включите IH25 и поднесите его ближе"
-                },
-            )
+        if (candidates.isEmpty()) {
+            reportReaderSetupIssue("Считыватель не найден. Включите IH25 и поднесите его ближе")
             return false
         }
 
-        gateway.readerAddress = candidate.macAddress
-        updateReaderPreparationStage(ReaderPreparationStage.CONNECTING)
-        emitReaderSetupProgress("Найден ${candidate.name}. Подключаю")
-        gateway.connect()
-        updateReaderPreparationStage(ReaderPreparationStage.PREPARING)
-        val ready = withTimeoutOrNull(READER_READY_TIMEOUT_MS) {
-            while (!readerReady.value && connectionState.value != ConnectionState.ERROR) delay(100)
-            readerReady.value
-        } == true
-        if (ready) {
-            completeReaderPreparation()
-            return true
+        // Try the saved address first, then the strongest discovered
+        // Honeywell devices. A failed candidate is reset before the next one.
+        for (candidate in candidates) {
+            if (!automationEnabled) return false
+            gateway.readerAddress = candidate.macAddress
+            updateReaderPreparationStage(ReaderPreparationStage.CONNECTING)
+            emitReaderSetupProgress("Найден ${candidate.name}. Подключаю")
+            gateway.connect()
+            updateReaderPreparationStage(ReaderPreparationStage.PREPARING)
+            val ready = withTimeoutOrNull(READER_READY_TIMEOUT_MS) {
+                while (!readerReady.value && connectionState.value != ConnectionState.ERROR) delay(100)
+                readerReady.value
+            } == true
+            if (ready) {
+                gateway.setAutoReconnect(true)
+                completeReaderPreparation()
+                return true
+            }
+            // Reset the SDK session before the next five-second retry. Do not do
+            // this on coroutine cancellation: Back only cancels preparation.
+            runCatching { gateway.disconnect() }
         }
-        // Reset the SDK session before the next five-second retry. Do not do
-        // this on coroutine cancellation: Back only cancels preparation.
-        runCatching { gateway.disconnect() }
         reportReaderSetupIssue("Считыватель не ответил. Повторяю поиск")
         return false
     }
-
-    private fun shouldContinueReaderSetup(): Boolean = shouldContinueReaderSetup(
-        state = _state.value,
-        readerReady = readerReady.value,
-        recoveringDisconnectedReader = recoveringDisconnectedReader,
-    )
 
     private fun updateReaderPreparationStage(stage: ReaderPreparationStage) {
         val current = _state.value as? AppState.ReaderPreparation ?: return
@@ -297,11 +342,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun emitReaderSetupProgress(text: String) {
         // The preparation screen renders its own stage. Avoid speaking the
         // same status every retry, but keep startup feedback for the home UI.
-        if (!shouldContinueReaderSetup()) emitEvent(text)
+        if (!automationEnabled) emitEvent(text)
     }
 
     private fun reportReaderSetupIssue(text: String) {
-        if (!shouldContinueReaderSetup()) emitEvent(text)
+        if (!automationEnabled) emitEvent(text)
     }
 
     /** Backwards-compatible entry point used by the activity after permissions. */
@@ -1100,6 +1145,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun emitEvent(value: String) { _events.tryEmit(value) }
 
     override fun onCleared() {
+        // In kiosk mode the foreground service owns the process-wide gateway;
+        // clearing an Activity ViewModel must not disable its reconnect loop.
+        if (app.appMode.value == AppMode.NORMAL) gateway.setAutoReconnect(false)
         scanJob?.cancel()
         automaticSetupJob?.cancel()
         voiceJob?.cancel()

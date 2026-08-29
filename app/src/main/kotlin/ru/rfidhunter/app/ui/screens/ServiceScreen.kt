@@ -20,6 +20,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.domain.ConnectionState
+import ru.rfidhunter.app.domain.AppMode
 import ru.rfidhunter.app.domain.FakeScenario
 import ru.rfidhunter.app.domain.ReaderScanState
 import ru.rfidhunter.app.ui.MainViewModel
@@ -55,8 +57,10 @@ internal fun ServiceScreen(
     recentReads: List<ru.rfidhunter.app.domain.TagRead>,
     pendingSyncCount: Int,
     syncSettings: ru.rfidhunter.app.data.SyncSettingsState,
+    onAppModeChanged: () -> Unit = {},
 ) {
     val fake = viewModel.fakeGateway
+    val appMode by viewModel.appMode.collectAsState()
     val extendedColors = LocalExtendedColors.current
     var voiceText by remember { mutableStateOf("") }
     var readerAddress by remember { mutableStateOf(viewModel.readerAddress()) }
@@ -69,6 +73,17 @@ internal fun ServiceScreen(
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("SERVICE / DEBUG", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(viewModel::closeService) { Text("Закрыть") } }
         Text("Backend: ${if (fake != null) "FAKE" else "HONEYWELL IH25"}")
+        Text("Режим работы", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(if (appMode == AppMode.KIOSK) "Киоск" else "Обычное приложение")
+            androidx.compose.material3.Switch(
+                checked = appMode == AppMode.KIOSK,
+                onCheckedChange = {
+                    viewModel.setAppMode(if (it) AppMode.KIOSK else AppMode.NORMAL)
+                    onAppModeChanged()
+                },
+            )
+        }
         Text("Состояние: ${when {
             scanState == ReaderScanState.SCANNING -> "сканирую"
             connection == ConnectionState.CONNECTING -> "подключаюсь"

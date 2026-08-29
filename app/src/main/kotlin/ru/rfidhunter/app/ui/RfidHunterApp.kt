@@ -63,6 +63,7 @@ fun RfidHunterApp(
     requestCameraPermission: () -> Unit,
     requestMicrophonePermission: () -> Unit,
     requestTriggerOverlayPermission: () -> Unit,
+    onAppModeChanged: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val items by viewModel.items.collectAsState()
@@ -140,7 +141,7 @@ fun RfidHunterApp(
                 }
                 Box(Modifier.weight(1f)) {
                     if (state is AppState.Service) {
-                        ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads, pendingSyncCount, syncSettings)
+                        ServiceScreen(viewModel, connection, readerScanState, discoveredDevices, readerDiagnostic, readerReady, recentReads, pendingSyncCount, syncSettings, onAppModeChanged)
                     } else {
                         UserScreen {
                             ScreenTransition(state) { target ->

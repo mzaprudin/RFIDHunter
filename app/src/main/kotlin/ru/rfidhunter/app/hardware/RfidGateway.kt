@@ -45,6 +45,9 @@ interface RfidGateway {
     suspend fun setReadPower(power: Int)
     suspend fun setBeeper(enabled: Boolean, frequency: Int, volume: Int)
 
+    /** Enables/disables vendor reconnect attempts for the current runtime policy. */
+    fun setAutoReconnect(enabled: Boolean) = Unit
+
     /** Release SDK listeners/resources. Safe to call more than once. */
     fun release() = Unit
 

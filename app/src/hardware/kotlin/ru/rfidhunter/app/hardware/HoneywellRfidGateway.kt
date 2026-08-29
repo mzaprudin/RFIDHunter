@@ -127,10 +127,16 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
 
     init {
         runCatching {
-            manager.setAutoReconnect(true)
+            manager.setAutoReconnect(false)
             manager.addEventListener(listener)
             manager.setTriggerMode(TriggerMode.RFID)
         }.onFailure { reportError("Ошибка инициализации SDK: ${it.message ?: it.javaClass.simpleName}") }
+    }
+
+    override fun setAutoReconnect(enabled: Boolean) {
+        if (released) return
+        runCatching { manager.setAutoReconnect(enabled) }
+            .onFailure { Log.w(TAG, "Could not set SDK auto-reconnect=$enabled", it) }
     }
 
     override suspend fun scanDevices(timeoutMs: Long): List<RfidDevice> {
@@ -247,6 +253,7 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     }
 
     override suspend fun disconnect() {
+        setAutoReconnect(false)
         stopInventorySafely()
         reader = null
         appliedReadPower = null

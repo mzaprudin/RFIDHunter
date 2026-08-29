@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import ru.rfidhunter.app.BuildConfig
 import ru.rfidhunter.app.RfidHunterApplication
 import ru.rfidhunter.app.TriggerWakeActivity
+import ru.rfidhunter.app.domain.AppMode
 import ru.rfidhunter.app.domain.TriggerEvent
 import kotlin.math.roundToInt
 
@@ -47,6 +48,7 @@ class RfidForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val app = application as RfidHunterApplication
         val manager = getSystemService(NotificationManager::class.java)
         // Remove the fixed-id notification used by older debug builds. A
         // still-active notification is only updated by notify(), and Android
@@ -63,7 +65,17 @@ class RfidForegroundService : Service() {
             .build()
         startForeground(NOTIFICATION_ID, notification)
 
-        val gateway = (application as RfidHunterApplication).rfidGateway
+        // A stale START_STICKY restart can race with a mode change. Enter the
+        // foreground first to satisfy Android's startForegroundService timing,
+        // then immediately terminate because normal mode has no background
+        // service policy.
+        if (app.appMode.value != AppMode.KIOSK) {
+            stopSelf()
+            return
+        }
+
+        val gateway = app.rfidGateway
+        gateway.setAutoReconnect(true)
         serviceScope.launch {
             gateway.triggerEvents.collectLatest { event ->
                 Log.i(TAG, "IH25 trigger event=$event")
@@ -73,6 +85,10 @@ class RfidForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if ((application as RfidHunterApplication).appMode.value != AppMode.KIOSK) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_REMOVE_TRIGGER_OVERLAY) {
             removeTriggerOverlay()
             return START_STICKY
