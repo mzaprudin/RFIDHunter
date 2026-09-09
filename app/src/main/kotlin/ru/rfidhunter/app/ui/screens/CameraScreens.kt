@@ -4,7 +4,9 @@ import android.graphics.BitmapFactory
 import android.media.MediaActionSound
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.util.Log
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.CameraController
@@ -32,10 +34,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,13 +57,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import ru.rfidhunter.app.R
 import ru.rfidhunter.app.ui.AppState
 import ru.rfidhunter.app.ui.MainViewModel
+import ru.rfidhunter.app.ui.MainViewModel.PhotoCaptureRequest
 import ru.rfidhunter.app.ui.PhotoProcessor
 import ru.rfidhunter.app.ui.components.Button
 import ru.rfidhunter.app.ui.components.PillRole
@@ -69,52 +79,120 @@ import ru.rfidhunter.app.ui.theme.AppStyles
 import ru.rfidhunter.app.ui.theme.Dimens
 import ru.rfidhunter.app.ui.theme.ReviewBackdrop
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 @Composable
 internal fun CameraScreen(state: AppState.Camera, viewModel: MainViewModel, permission: Boolean, requestPermission: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var processingPhoto by remember { mutableStateOf(false) }
-    val photoScope = rememberCoroutineScope()
+    var processingRequest by remember { mutableStateOf<PhotoCaptureRequest?>(null) }
+    val processingPhoto = processingRequest != null
+    // Equal Camera data can still belong to a different navigation session.
+    val latestCamera = remember { mutableStateOf(state, referentialEqualityPolicy()) }.apply { value = state }
+    val appState by viewModel.state.collectAsState()
+    val currentSession = appState === state
     val shutterSound = remember(context) { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
     val vibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
     DisposableEffect(shutterSound) { onDispose { shutterSound.release() } }
-    LaunchedEffect(viewModel, shutterSound, vibrator) {
-        viewModel.photoFeedback.collect {
-            shutterSound.play(MediaActionSound.SHUTTER_CLICK)
-            vibrator?.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
+    val controller = remember(context) { LifecycleCameraController(context).apply { cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA; setEnabledUseCases(CameraController.IMAGE_CAPTURE) } }
+    DisposableEffect(lifecycleOwner, controller, permission, currentSession) {
+        if (permission && currentSession) {
+            try {
+                controller.bindToLifecycle(lifecycleOwner)
+            } catch (error: Exception) {
+                controller.unbind()
+                Log.w("RfidCamera", "not-ready: bind failed", error)
+            }
+        }
+        onDispose {
+            controller.unbind()
+            Log.d("RfidCamera", "disposed binding permission=$permission current=$currentSession")
         }
     }
-    val controller = remember(context) { LifecycleCameraController(context).apply { cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA; setEnabledUseCases(CameraController.IMAGE_CAPTURE) } }
-    LaunchedEffect(lifecycleOwner, controller) { controller.bindToLifecycle(lifecycleOwner) }
-    LaunchedEffect(viewModel, controller) {
-        viewModel.photoCapture.collect {
-            if (!permission) return@collect
-            if (processingPhoto) return@collect
-            processingPhoto = true
-            val directory = File(context.filesDir, "photos").apply { mkdirs() }
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-            val source = File(directory, "capture_$timestamp.jpg")
-            val file = File(directory, "photo_$timestamp.jpg")
-            val options = ImageCapture.OutputFileOptions.Builder(source).build()
-            controller.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    photoScope.launch {
-                        val normalized = withContext(Dispatchers.Default) { PhotoProcessor.normalize(source, file) }
-                        processingPhoto = false
-                        if (normalized) {
-                            viewModel.onPhotoCaptured(file.absolutePath)
-                        } else {
-                            source.delete()
-                            viewModel.onPhotoCaptureFailed()
+    LaunchedEffect(viewModel, controller, lifecycleOwner, permission, currentSession) {
+        if (!permission || !currentSession) return@LaunchedEffect
+        // Navigation cancels capture even while AnimatedContent retains the outgoing view.
+        viewModel.state.collectLatest { camera ->
+            if (camera !is AppState.Camera) return@collectLatest
+            val sessionId = System.identityHashCode(camera)
+            coroutineScope {
+                var activeRequest: PhotoCaptureRequest? = null
+                try {
+                    viewModel.photoCapture.collect { request ->
+                        val reason = when {
+                            request.camera !== camera || camera !== latestCamera.value || viewModel.state.value !== camera -> "session"
+                            processingRequest != null -> "busy"
+                            !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) -> "lifecycle"
+                            controller.cameraInfo?.cameraState?.value?.type != CameraState.Type.OPEN -> "camera not open"
+                            else -> null
+                        }
+                        if (reason != null || !viewModel.tryStartPhotoCapture(request)) {
+                            Log.d("RfidCamera", "not-ready: ${reason ?: "busy or stale session"} session=$sessionId")
+                            return@collect
+                        }
+                        activeRequest = request
+                        processingRequest = request
+                        // Keep collecting (and discarding) busy keys rather than queuing a second shot.
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            try {
+                                val directory = File(context.filesDir, "photos")
+                                check(directory.isDirectory || directory.mkdirs()) { "Cannot create photo directory" }
+                                val source = File.createTempFile("capture_", ".jpg", directory)
+                                val file = File(directory, source.name.replaceFirst("capture_", "photo_"))
+                                var delivered = false
+                                try {
+                                    suspendCancellableCoroutine<Unit> { continuation ->
+                                        val options = ImageCapture.OutputFileOptions.Builder(source).build()
+                                        controller.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
+                                            override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                                                if (viewModel.state.value !== request.camera) continuation.cancel()
+                                                if (continuation.isActive) continuation.resume(Unit)
+                                                else source.delete()
+                                            }
+
+                                            override fun onError(exception: ImageCaptureException) {
+                                                source.delete()
+                                                if (continuation.isActive) continuation.resumeWithException(exception)
+                                                else Log.d("RfidCamera", "capture error after cancellation session=$sessionId", exception)
+                                            }
+                                        })
+                                        Log.i("RfidCamera", "accepted session=$sessionId")
+                                        runCatching { shutterSound.play(MediaActionSound.SHUTTER_CLICK) }
+                                            .onFailure { Log.w("RfidCamera", "shutter sound failed", it) }
+                                        runCatching { vibrator?.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE)) }
+                                            .onFailure { Log.w("RfidCamera", "shutter vibration failed", it) }
+                                    }
+                                    check(withContext(Dispatchers.Default) { PhotoProcessor.normalize(source, file) }) {
+                                        "Photo normalization failed"
+                                    }
+                                    delivered = viewModel.onPhotoCaptured(request, file.absolutePath)
+                                    if (delivered) Log.i("RfidCamera", "success session=$sessionId")
+                                } finally {
+                                    if (!delivered) {
+                                        source.delete()
+                                        file.delete()
+                                    }
+                                }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Log.w("RfidCamera", "capture error session=$sessionId", error)
+                                viewModel.onPhotoCaptureFailed(request)
+                            } finally {
+                                if (processingRequest === request) processingRequest = null
+                                viewModel.cancelPhotoCapture(request)
+                            }
                         }
                     }
+                } finally {
+                    activeRequest?.let { request ->
+                        if (processingRequest === request) processingRequest = null
+                        viewModel.cancelPhotoCapture(request)
+                    }
+                    Log.d("RfidCamera", "disposed capture session=$sessionId")
                 }
-                override fun onError(exception: ImageCaptureException) { processingPhoto = false; source.delete(); viewModel.onPhotoCaptureFailed() }
-            })
+            }
         }
     }
     if (!permission) {

@@ -11,11 +11,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.Lifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -43,7 +45,9 @@ class MainActivity : ComponentActivity() {
                 Intent.ACTION_SCREEN_ON -> isScreenInteractive()
                 else -> isScreenInteractive()
             }
-            activeViewModel?.onHostActivityStateChanged(app.mainActivityResumed && app.screenInteractive)
+            activeViewModel?.onHostActivityStateChanged(
+                lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && app.screenInteractive,
+            )
         }
     }
 
@@ -107,15 +111,25 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         val app = application as RfidHunterApplication
         app.mainActivityResumed = false
-        activeViewModel?.onHostActivityStateChanged(false)
+        // Permission dialogs pause a still-visible Activity. Keep IH25 connected
+        // until onStop (actually hidden) or ACTION_SCREEN_OFF instead.
+        Log.d("RfidLifecycle", "Activity paused; reader policy waits for stop or screen off")
         super.onPause()
     }
 
     override fun onStop() {
         val app = application as RfidHunterApplication
         app.mainActivityResumed = false
+        Log.d("RfidLifecycle", "Activity stopped; applying background reader policy")
         activeViewModel?.onHostActivityStateChanged(false)
         super.onStop()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        refreshPermissions()
+        Log.d("RfidLifecycle", "Permissions updated camera=$cameraGranted microphone=$microphoneGranted")
+        syncReaderServiceForMode()
     }
 
     override fun onDestroy() {

@@ -45,17 +45,45 @@ val prepareWhisperModels by tasks.registering(Sync::class) {
     into(generatedWhisperAssets.map { it.dir("whisper-model") })
 }
 
+val signingStoreFile = providers.gradleProperty("rfidhunter.storeFile")
+    .orElse(localProperties.getProperty("rfidhunter.storeFile") ?: "")
+val signingStorePassword = providers.gradleProperty("rfidhunter.storePassword")
+    .orElse(localProperties.getProperty("rfidhunter.storePassword") ?: "")
+val signingKeyAlias = providers.gradleProperty("rfidhunter.keyAlias")
+    .orElse(localProperties.getProperty("rfidhunter.keyAlias") ?: "")
+val signingKeyPassword = providers.gradleProperty("rfidhunter.keyPassword")
+    .orElse(localProperties.getProperty("rfidhunter.keyPassword") ?: "")
+val signingConfigured = listOf(signingStoreFile, signingStorePassword, signingKeyAlias, signingKeyPassword)
+    .all { it.orNull.orEmpty().isNotBlank() } &&
+    rootProject.file(signingStoreFile.get()).isFile
+
+val checkReleaseSigning by tasks.registering {
+    doLast {
+        check(signingConfigured) {
+            "Release signing is missing or invalid. Set rfidhunter.storeFile, rfidhunter.storePassword, " +
+                "rfidhunter.keyAlias and rfidhunter.keyPassword in local.properties or Gradle properties. " +
+                "The keystore must exist; relative paths are resolved from the project root. " +
+                "Unsigned release APKs cannot be installed on Android."
+        }
+    }
+}
+
+tasks.matching { it.name.startsWith("pre") && it.name.endsWith("ReleaseBuild") }.configureEach {
+    dependsOn(checkReleaseSigning)
+}
+
 android {
     namespace = "ru.rfidhunter.app"
     compileSdk = 35
+    testBuildType = providers.gradleProperty("androidTestBuildType").orElse("debug").get()
 
     defaultConfig {
         applicationId = "ru.rfidhunter.app"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        versionCode = 3
+        versionName = "0.1.2"
+        testInstrumentationRunner = "ru.rfidhunter.app.TargetApkSmokeRunner"
         vectorDrawables.useSupportLibrary = true
         if (usableNdk) ndk { abiFilters += listOf("arm64-v8a") }
     }
@@ -93,6 +121,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (signingConfigured) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = rootProject.file(signingStoreFile.get())
+                    storePassword = signingStorePassword.get()
+                    keyAlias = signingKeyAlias.get()
+                    keyPassword = signingKeyPassword.get()
+                }
+            }
         }
     }
 

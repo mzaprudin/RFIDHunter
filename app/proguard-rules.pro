@@ -10,3 +10,9 @@
 # Vosk loads model/decoder implementation classes reflectively from its
 # Android native wrapper.
 -keep class org.vosk.** { *; }
+
+# libjnidispatch resolves Java fields/methods by name (including Pointer.peer).
+# Keeping only org.vosk and native method declarations breaks release startup.
+-keep class com.sun.jna.** { *; }
+# JNA also ships desktop AWT helpers, which are never used on Android.
+-dontwarn java.awt.**

@@ -15,5 +15,6 @@ app/src/hardware/assets/vosk-model
 .env
 third_party
 artifacts/
+keystore/
 server/data/
 .vscode/

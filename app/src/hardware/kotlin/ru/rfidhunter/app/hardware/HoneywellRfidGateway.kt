@@ -174,18 +174,20 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
                     runCatching { scanner.stopScan(callback) }
                     val devices = found.values.sortedWith(compareByDescending<RfidDevice> { it.likelyHoneywell }.thenByDescending { it.rssi })
                     _discoveredDevices.value = devices
-                _scanState.value = ReaderScanState.COMPLETE
-                _diagnosticMessage.value = "Найдено устройств: ${devices.size}"
-                Log.i(TAG, "BLE scan complete devices=${devices.size}")
+                    _scanState.value = ReaderScanState.COMPLETE
+                    _diagnosticMessage.value = "Найдено устройств: ${devices.size}"
+                    Log.i(TAG, "BLE scan complete devices=${devices.size} readers=${devices.count { it.likelyHoneywell }}")
                     if (continuation.isActive) continuation.resume(devices)
                 }
             }
             callback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    if (finished) return
                     val device = result.device
                     val address = runCatching { device.address }.getOrNull().orEmpty()
                     if (address.isBlank()) return
-                    val name = runCatching { device.name }.getOrNull().orEmpty().ifBlank { "Без имени" }
+                    val name = result.scanRecord?.deviceName?.takeIf { it.isNotBlank() }
+                        ?: runCatching { device.name }.getOrNull().orEmpty().ifBlank { "Без имени" }
                     val item = RfidDevice(name, address, result.rssi, isHoneywell(name))
                     val previous = found[address]
                     if (previous == null || item.rssi > previous.rssi || (item.likelyHoneywell && !previous.likelyHoneywell)) found[address] = item
@@ -347,7 +349,8 @@ class HoneywellRfidGateway(private val context: Context) : RfidGateway {
     }
 
     private fun hasBluetoothScanPermission(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     } else {
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED

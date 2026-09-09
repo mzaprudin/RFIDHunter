@@ -210,10 +210,21 @@ class VoskVoiceRecognizer(private val context: Context) : PcmVoiceRecognizer {
 
     private fun modelOrNull(): org.vosk.Model? {
         loadedModel?.let { return it }
-        if (!isAvailable) return null
+        if (!isAvailable) {
+            Log.w("RfidVoice", "Vosk model files missing at ${modelPath.absolutePath}")
+            return null
+        }
         synchronized(modelLock) {
             loadedModel?.let { return it }
-            return try { org.vosk.Model(modelPath.absolutePath).also { loadedModel = it } } catch (_: Throwable) { null }
+            return try {
+                org.vosk.Model(modelPath.absolutePath).also {
+                    loadedModel = it
+                    Log.i("RfidVoice", "Vosk model ready at ${modelPath.absolutePath}")
+                }
+            } catch (error: Throwable) {
+                Log.e("RfidVoice", "Vosk model initialization failed at ${modelPath.absolutePath}", error)
+                null
+            }
         }
     }
 

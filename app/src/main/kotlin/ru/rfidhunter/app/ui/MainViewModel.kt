@@ -2,6 +2,7 @@ package ru.rfidhunter.app.ui
 
 import android.app.Application
 import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineStart
@@ -80,10 +81,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow<AppState>(AppState.Idle)
     val state: StateFlow<AppState> = _state.asStateFlow()
-    private val _photoCapture = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val photoCapture = _photoCapture.asSharedFlow()
-    private val _photoFeedback = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val photoFeedback = _photoFeedback.asSharedFlow()
+    internal class PhotoCaptureRequest(val camera: AppState.Camera)
+
+    private val _photoCapture = MutableSharedFlow<PhotoCaptureRequest>(extraBufferCapacity = 1)
+    internal val photoCapture = _photoCapture.asSharedFlow()
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val events = _events.asSharedFlow()
 
@@ -92,7 +93,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var addSuccessJob: Job? = null
     private var voiceSessionId = 0L
     private var captureReads = false
-    private var photoCaptureInProgress = false
+    private var activePhotoCapture: PhotoCaptureRequest? = null
+    private val photoCaptureInProgress: Boolean
+        get() = activePhotoCapture?.let { _state.value === it.camera } == true
     private val readBuffer = mutableListOf<TagRead>()
     private val searchSignalPolicy = SearchSignalPolicy()
     private var triggerPressedAt = 0L
@@ -685,31 +688,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun onPhotoCaptured(path: String) {
-        photoCaptureInProgress = false
+    internal fun tryStartPhotoCapture(request: PhotoCaptureRequest): Boolean {
+        if (_state.value !== request.camera || photoCaptureInProgress) return false
+        activePhotoCapture = request
         markActivity()
-        val current = _state.value as? AppState.Camera ?: return
-        _state.value = AppState.PhotoReview(path, current.context, current.item, current.name, current.epc)
-        emitEvent("Проверьте фотографию")
+        return true
     }
 
-    fun onPhotoCaptureFailed() {
-        photoCaptureInProgress = false
+    internal fun cancelPhotoCapture(request: PhotoCaptureRequest) {
+        if (activePhotoCapture === request) activePhotoCapture = null
+    }
+
+    internal fun onPhotoCaptured(request: PhotoCaptureRequest, path: String): Boolean {
+        if (activePhotoCapture !== request) return false
+        cancelPhotoCapture(request)
+        val current = request.camera
+        if (_state.value !== current) return false
+        markActivity()
+        _state.value = AppState.PhotoReview(path, current.context, current.item, current.name, current.epc)
+        emitEvent("Проверьте фотографию")
+        return true
+    }
+
+    internal fun onPhotoCaptureFailed(request: PhotoCaptureRequest) {
+        if (activePhotoCapture !== request) return
+        cancelPhotoCapture(request)
+        if (_state.value !== request.camera) return
         markActivity()
         emitEvent("Не удалось сохранить фотографию. Повторите")
     }
 
-    fun requestPhotoCapture() {
-        photoCaptureInProgress = true
+    private fun requestPhotoCapture() {
+        val current = _state.value as? AppState.Camera ?: return
         markActivity()
-        _photoCapture.tryEmit(Unit)
-    }
-
-    fun requestPhotoCaptureWithFeedback() {
-        photoCaptureInProgress = true
-        markActivity()
-        _photoFeedback.tryEmit(Unit)
-        _photoCapture.tryEmit(Unit)
+        if (photoCaptureInProgress || _photoCapture.subscriptionCount.value == 0) {
+            Log.d("RfidCamera", "not-ready: busy or no collector")
+            return
+        }
+        if (!_photoCapture.tryEmit(PhotoCaptureRequest(current))) {
+            Log.d("RfidCamera", "not-ready: pending request")
+        }
     }
 
     fun redoPhoto() {
@@ -748,7 +766,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onVolumeKey(delta: Int = 0) {
         markActivity()
         when (_state.value) {
-            is AppState.Camera -> requestPhotoCaptureWithFeedback()
+            is AppState.Camera -> requestPhotoCapture()
             is AppState.Catalog -> catalogPage(delta)
             else -> Unit
         }
