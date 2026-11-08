@@ -1,369 +1,127 @@
-# Архитектура RFIDHunter
+# RFIDHunter architecture
 
-Документ фиксирует архитектуру первого офлайн-прототипа и правила, которые важны для последующей реализации. Это не привязка к конкретному дизайну экранов: визуальные размеры и тайминги должны быть откалиброваны на Huawei nova 3 и IH25.
+[Русская версия](ARCHITECTURE.RU.md) · [Overview](README.md)
 
-## Цели и ограничения
+RFIDHunter keeps an item catalogue on an Android phone and uses a Honeywell IH25 reader to locate tagged belongings. Voice recognition, photographs and catalogue operations work locally; an optional server stores a backup. The original target handset is Huawei nova 3 running Android 9.
 
-- Android-приложение для Huawei nova 3, Android 9.
-- Полностью автономная работа без интернета.
-- Считыватель Honeywell IH25 подключается по Bluetooth.
-- SDK IH25 находится в локальной директории `Honeywell_RFID_SDK_v0.5.0`, которая игнорируется Git и не распространяется вместе с исходниками.
-- Основной пользователь плохо переносит мелкие элементы, неточные касания и тихие уведомления.
-- В будущем приложение переводится в kiosk/device-owner режим, но первый прототип должен работать как обычное приложение.
+## Components and state
 
-## Слои приложения
-
-```text
-UI (Compose)
-  ├─ Waiting / Catalog / Camera / PhotoReview / Voice / Search
-  └─ ResilientTouchZone и озвучка состояния
-
-Domain
-  ├─ AppStateMachine
-  ├─ CommandParser и fuzzy matching названий
-  ├─ RfidDecisionEngine
-  ├─ SearchController (RSSI, цели, тайминги)
-  └─ AddItemWorkflow
-
-Data
-  ├─ Room: Item, RfidTag, Photo metadata, Settings
-  ├─ файловое хранилище фотографий
-  └─ локальные звуковые ресурсы / Vosk model
-
-Platform / Hardware
-  ├─ HoneywellRfidGateway (адаптер SDK)
-  ├─ Bluetooth и foreground service
-  ├─ CameraX
-  ├─ Vosk offline recognizer
-  ├─ Android Audio/MediaPlayer/Vibrator/PowerManager
-  └─ обработка физических клавиш
+```mermaid
+flowchart TD
+    UI["Compose screens and physical keys"] --> VM["MainViewModel / AppState"]
+    VM --> Domain["RFID decisions and voice commands"]
+    VM --> Gateway["RfidGateway"]
+    Gateway --> HW["Honeywell adapter / IH25"]
+    Gateway --> Mock["FakeRfidGateway"]
+    VM --> Voice["Audio capture / VAD / offline recognizer"]
+    VM --> Camera["CameraX / PhotoProcessor"]
+    VM --> Repo["ItemRepository / Room"]
+    Repo --> Outbox["Durable outbox / WorkManager"]
+    Outbox --> Server["Optional backup server"]
 ```
 
-SDK и Android API не должны использоваться непосредственно из экранов. Это позволяет тестировать сценарии с fake-считывателем и не распространять SDK в открытом репозитории.
+`MainViewModel` owns the workflow as an `AppState` flow. Compose renders states and sends events; domain policies handle RFID selection, catalogue matching, search feedback, trigger timing and inactivity. The application owns one gateway shared with `RfidForegroundService`, so the service and Activity use the same reader connection.
 
-Рекомендуемый стек: Kotlin, Jetpack Compose, Room, CameraX, Vosk. Если версия Compose окажется неудобной для целевого Android 9 или старой среды сборки, UI можно реализовать на обычных Android View, сохранив те же доменные интерфейсы.
+The `hardware` flavor implements `RfidGateway` with the vendor SDK; `mock` substitutes `FakeRfidGateway`. The Honeywell AAR is a local dependency. CameraX, audio capture and Room remain real platform components in the mock build.
 
-## Состояния приложения
+The main transitions are:
 
-Состояние хранится в одном автомате, а экраны только отображают его и отправляют события. Минимальный набор:
-
-```text
-SLEEPING / IDLE
-  └─ TriggerShortPressed → INITIAL_RFID_CHECK
-
-INITIAL_RFID_CHECK
-  ├─ OneUnknownTag       → ADD_NAME
-  ├─ OneKnownTag         → ITEM_CARD
-  ├─ SeveralTags with a clear RSSI leader → handle the leader as one tag
-  ├─ SeveralTags without a clear leader   → ASK_SEARCH_COMMAND
-  └─ NoTag               → ASK_SEARCH_COMMAND
-
-ADD_NAME
-  ├─ VoiceNameAccepted   → CAMERA
-  └─ Cancel / timeout    → IDLE
-
-CAMERA
-  ├─ VolumePressed       → PHOTO_REVIEW
-  └─ Cancel              → состояние, из которого была открыта камера
-
-PHOTO_REVIEW
-  ├─ Redo                → CAMERA
-  └─ Done
-       ├─ новый Item с уже прочитанным EPC → SAVE_ITEM → IDLE
-       ├─ ручное добавление без EPC        → WAIT_FOR_NEW_TAG
-       └─ редактирование Item              → UPDATE_PHOTO → ITEM_CARD
-
-ASK_SEARCH_COMMAND
-  ├─ SearchCommand       → SEARCH_TARGET
-  ├─ BareItemName        → SEARCH_TARGET
-  ├─ AddCommandWithName  → CAMERA (явный запасной сценарий)
-  ├─ AddCommandWithoutName → ADD_NAME
-  └─ Unknown / low confidence → ASK_SEARCH_COMMAND
-
-WAIT_FOR_NEW_TAG
-  ├─ OneUnknownTag       → SAVE_ITEM → IDLE
-  ├─ Known / ambiguous tag → сообщение об ошибке и повтор
-  └─ Cancel              → IDLE
-
-ITEM_CARD
-  ├─ ChangeTag           → CHANGE_TAG
-  ├─ Rename              → RENAME_ITEM
-  ├─ RetakePhoto         → CAMERA (режим обновления существующей вещи)
-  ├─ Delete              → CONFIRM_DELETE
-  └─ Close               → IDLE
-
-CHANGE_TAG
-  ├─ OneUnknownTag       → SAVE_NEW_TAG → ITEM_CARD
-  ├─ OneKnownTag / ambiguous tag → сообщение об ошибке и повтор
-  └─ Cancel              → ITEM_CARD
-
-RENAME_ITEM
-  ├─ VoiceNameAccepted   → SAVE_NAME → ITEM_CARD
-  └─ Cancel              → ITEM_CARD
-
-CONFIRM_DELETE
-  ├─ Confirm             → DELETE_ITEM → IDLE
-  └─ Cancel              → ITEM_CARD
-
-CATALOG
-  ├─ Volume               → смена страницы
-  ├─ ItemPressed          → SEARCH_TARGET
-  └─ TriggerShortPressed  → INITIAL_RFID_CHECK
-
-SEARCH_TARGET
-  ├─ TriggerHeld         → RFID_SEARCH
-  ├─ Catalog              → CATALOG
-  └─ Cancel               → IDLE
-
-RFID_SEARCH
-  ├─ TriggerReleased     → SEARCH_PAUSED
-  ├─ FinishPressed       → IDLE
-  └─ disconnected/error   → HARDWARE_ERROR
-
-SEARCH_PAUSED
-  ├─ TriggerShortPressed → INITIAL_RFID_CHECK
-  ├─ TriggerHeld 1 s     → RFID_SEARCH, не дожидаясь отпускания
-  └─ FinishPressed       → IDLE
+```mermaid
+flowchart TD
+    Idle["Idle / catalogue / item card"] -->|Trigger| Check["Short RFID check"]
+    Check -->|Unknown nearby tag| Name["Name confirmation"]
+    Check -->|Known nearby tag| Card["Item card"]
+    Check -->|No clear nearby tag| Voice["Voice search and confirmation"]
+    Name --> Camera["Camera / photo review"]
+    Camera --> Save["Save item and outbox event"]
+    Save --> Home["Idle"]
+    Voice --> Ready["Reader preparation if needed"]
+    Ready --> Target["Search target"]
+    Card -->|Search| Target
+    Target -->|Hold trigger| Search["Continuous RFID search"]
+    Search -->|Release| Pause["Search paused"]
+    Pause -->|Hold for 1 s| Search
+    Pause -->|Short press| Check
+    Search -->|Finish| Home
+    Pause -->|Finish| Home
 ```
 
-Состояния `SLEEPING` и `IDLE` логически одинаковы для сценария, но отличаются тем, погашен ли экран. При коротком событии IH25 приложение должно разбудить экран и показать/озвучить текущий этап.
+Manual voice addition without a previously read EPC goes from photo review to `WaitForNewTag`. Replacing a tag keeps the old association until a suitable unused tag is accepted. Renaming and photo replacement update the existing item; deletion requires confirmation. Selecting a catalogue card opens its item card.
 
-### Короткое первичное чтение
+## RFID selection and search
 
-После короткого курка `RfidDecisionEngine`:
+The initial inventory uses **5 dBm for 850 ms**. `RfidDecisionEngine` folds duplicate EPCs case-insensitively, retains their best valid RSSI and counts observations. A single candidate must reach **−48 dBm**. With multiple candidates, the strongest must also lead the runner-up by **8 dB**; missing or inconclusive measurements lead to voice search. Observation count is retained for diagnostics, rather than used as a minimum-read threshold.
 
-1. сохраняет текущую конфигурацию мощности;
-2. устанавливает минимальную безопасную мощность чтения;
-3. выполняет короткий inventory примерно 0,7–1,0 секунды;
-4. дедуплицирует EPC, сохраняя для каждого лучший RSSI и число наблюдений;
-5. если EPC один — выбирает его только при наличии сильного RSSI (не слабее
-   настроечного порога ближнего чтения, сейчас `-48 dBm`); если EPC несколько,
-   выбирает лидера только при том же пороге и преимуществе не менее 8 dB над
-   вторым сигналом;
-6. при отсутствии меток или явного лидера переводит пользователя в голосовой поиск;
-7. восстанавливает/передаёт конфигурацию следующему этапу.
+Continuous search filters observations to the selected EPC and runs at a fixed **30 dBm** while the trigger is held. Inventory is not restarted for display updates. `SearchSignalTracker` applies exponential smoothing with factor **0.24** and drops a measurement after **900 ms** without a valid observation. The view model refreshes feedback every **50 ms**.
 
-Точное время, минимальная мощность и порог преимущества RSSI являются параметрами
-настройки, а не жёсткими константами: они зависят от метки, положения антенны и
-реального IH25.
+`SearchSignalPolicy` maps **−82…−42 dBm** to the signal display. Every detected tag has a small audible signal; absent or invalid RSSI returns the needle to zero and uses the slowest background cadence. Click intervals range from **1100 to 85 ms**, with exponent **0.55** making weak-signal changes audible. These are feedback settings, not a distance measurement.
 
-Несколько EPC сами по себе не являются ошибкой: близкая метка может явно выделяться
-по RSSI среди посторонних. Если RSSI слабее порога ближнего чтения, RSSI отсутствует,
-разница меньше порога или сигналы примерно равны, автоматический выбор не выполняется
-— пользователь сразу переходит в голосовой поиск. Это сохраняет простой сценарий для
-основного экрана и не требует разбираться с техническим экраном `MULTIPLE_TAGS`.
+Releasing the trigger pauses inventory. In the paused state, a short press starts a fresh contextual check; holding for **1000 ms** resumes search during that same press. Finish stops inventory and returns to `Idle`.
 
-В автоматическом сценарии `ONE_UNKNOWN` EPC сохраняется как часть незавершённого `AddItemWorkflow`, поэтому после названия и фотографии повторное чтение не требуется. При явной голосовой команде `добавь ...`, когда EPC ещё нет, после фотографии используется `WAIT_FOR_NEW_TAG` с теми же правилами ближнего чтения.
+## Reader connection and Android lifecycle
 
-### Известная метка
+The shared setup workflow scans BLE for **5 s**, tries the saved address first, then likely Honeywell devices in descending RSSI order. A saved address remains a candidate even if the scan does not report it. Connection and reader preparation have a **30 s** readiness timeout; failed attempts retry after **5 s** while reader automation is enabled. SDK auto-reconnect is disabled during discovery to avoid competing connection attempts, then enabled after readiness.
 
-При `ONE_KNOWN` приложение озвучивает название, связанное с EPC, и открывает `ITEM_CARD`. Поскольку метка прочитана на минимальной мощности, вещь уже находится в непосредственной близости от считывателя и запускать её поиск не нужно.
+A selected item waits in `ReaderPreparation` until `readerReady`; readiness opens `SearchTarget` without starting inventory. An unexpected disconnect also starts recovery from the main screen. Blocking inventory commands run on `Dispatchers.IO`.
 
-Карточка показывает крупную фотографию, название и действия:
+- **Normal mode:** reader automation runs while the Activity is visible and the screen is interactive. Permission dialogs only pause the Activity and retain the connection; leaving the app or turning off the screen stops inventory and disconnects.
+- **Kiosk mode:** the foreground service retains reader operation in the background and handles trigger wake-up. Wake locks, notifications, a wake Activity and an optional overlay support returning to the application. The wake UI is skipped if `MainActivity` is already resumed. This runtime mode does not itself provision Android device-owner management.
 
-- `Изменить метку`;
-- `Изменить название`;
-- `Переделать фото`;
-- `Удалить`.
+Android 12+ uses nearby-device Bluetooth permissions with `neverForLocation`; Android 9–11 uses location permission for BLE scanning. Actual lock-screen and vendor power-management behavior belongs to device testing.
 
-При замене EPC старая связь не удаляется заранее. Приложение выполняет ближнее чтение, принимает только одну неизвестную метку, а затем атомарно заменяет связь. Уже зарегистрированную метку нельзя назначить второй вещи.
+<a id="audio-pipeline"></a>
 
-Переименование использует офлайн-голосовой ввод с возможностью повтора. Переделка фотографии повторно использует `CAMERA` и `PHOTO_REVIEW`, но после `ГОТОВО!` обновляет существующую запись. Удаление является опасным действием и требует отдельного подтверждения; реализация может сначала помечать запись удалённой, чтобы предусмотреть восстановление из сервисного режима.
+## Audio capture and offline recognition
 
-## Интеграция Honeywell IH25
-
-Адаптер `HoneywellRfidGateway` скрывает классы SDK:
-
-- `RfidManager.getInstance(context)`;
-- `connect(macAddress)` / `disconnect()`;
-- `setAutoReconnect(true)`;
-- `addEventListener` для подключения, отключения и `onRfidTriggered`;
-- `createReader()` и проверка `RfidReader.available()`;
-- `RfidReader.read(...)` / `stopRead()`;
-- `OnTagReadListener` и `TagReadData.getEpcHexStr()`;
-- `setAntennaPower(...)` для ступеней мощности;
-- `setBeeper(on, freq, vol)` и `setLEDBlink(...)`.
-
-SDK IH25 сообщает нажатие и отпускание курка через `onRfidTriggered(boolean)`. Для основного сценария нужно установить `TriggerMode.RFID`. При потере Bluetooth foreground service сохраняет состояние, сообщает пользователю об ошибке и пытается переподключиться.
-
-Конкретный Bluetooth MAC-адрес и выбранный считыватель сохраняются локально. В текущем прототипе MAC-адрес задаётся в компактном сервисном экране (доступ разработчика), сохраняется в `SharedPreferences`, после чего `connect` вызывает `RfidManager.connect(mac)` и `createReader()`. В `mock`-варианте поле присутствует для проверки интерфейса, но не влияет на fake-считыватель. `RfidForegroundService` и `MainViewModel` используют один экземпляр gateway из `RfidHunterApplication`, поэтому события курка не дублируются. Обычный пользователь не проходит экран настройки.
-
-## Контроллер поиска и RSSI
-
-`SearchController` получает поток каждого `TagReadData`, фильтрует только EPC целевой вещи и считает экспоненциально сглаженный RSSI. Перед сглаживанием RSSI приводится к общей шкале максимальной мощности: к измерению добавляется часть разницы между опорной и текущей мощностью передатчика. Для тестового IH25 коэффициент аппаратно откалиброван как `0,4`: снижение мощности на 5 dBm в среднем уменьшает сообщаемый RSSI примерно на 2 dB. Поэтому контролируемое сужение зоны чтения не выглядит для пользователя как внезапное удаление от вещи. Сырые скачки не должны менять подсказку мгновенно. В аппаратном gateway дедуплицированный поток остаётся для коротких решений, а отдельный поток наблюдений сохраняет и более слабые повторные RSSI, необходимые для живого индикатора.
-
-Каждый новый поиск начинается с максимальной мощности антенны. Цель первого этапа — как можно быстрее определить, присутствует ли целевая метка в доступной зоне считывания. Начинать дальний поиск с минимальной мощности нельзя: отсутствие чтения может заставить пользователя ошибочно уйти от вещи.
-
-После появления целевой метки контроллер оценивает не единичный RSSI, а устойчивый сглаженный сигнал:
-
-1. максимальная мощность используется до первого надёжного обнаружения;
-2. если RSSI превышает порог сильного сигнала в течение заданного времени, мощность снижается на одну ступень;
-3. если метка остаётся видимой и сигнал снова устойчиво сильный, мощность снижается дальше;
-4. если метка пропала после снижения, контроллер возвращает предыдущую ступень;
-5. минимальная мощность соответствует самой узкой зоне финального поиска.
-
-Таким образом, мощность работает как последовательное сужение области: от быстрого обнаружения в комнате до точной локализации рядом со считывателем.
-
-Во время удержания курка `RfidReader.read(...)` работает непрерывными длинными отрезками; контроллер не останавливает и не перезапускает inventory ради обновления интерфейса. `TagReadOption` запрашивает только RSSI и использует `stopPercent = 0`, чтобы не добавлять паузу между раундами inventory. Короткий контролируемый перезапуск нужен только при подтверждённой смене ступени мощности. Блокирующие команды `stopRead`, настройки мощности и `read` выполняются на I/O-потоке, поэтому аппаратное переключение не останавливает главный поток, а вместе с ним анимацию и таймер щелчков. Состояние шкалы пересчитывается независимо примерно каждые 50 мс, а сигнал считается потерянным только после короткого окна без наблюдений.
-
-Доменная мощность хранится в dBm (`5…30`), а Honeywell SDK получает значение в сотых долях dBm (`500…3000`). Смена мощности требует контролируемого перезапуска `read()`: попытка вызвать `setAntennaPower` внутри активного чтения прекращает callbacks на IH25. Поэтому ступень меняется только после нескольких устойчивых окон, а между изменениями inventory остаётся непрерывным.
-
-Основная обратная связь поиска формируется телефоном: крупная аналоговая шкала показывает сглаженную глобальную оценку сигнала только целевого EPC, а короткий звуковой щелчок воспроизводится собственным таймером с переменным интервалом. Таймер не привязан к моментам прихода RFID-пакетов: новые данные только меняют его частоту. Частотная кривая нелинейна и сильнее растягивает область слабого сигнала, чтобы правильное направление было слышно ещё вдали. Сама частота меняется с отдельным быстрым сглаживанием при усилении и более медленным при ослаблении. Пищалка IH25 остаётся доступной для простых системных подтверждений, но не используется для динамического «дозиметрического» сигнала.
-
-Рекомендуемые уровни обратной связи:
-
-- метка не видна — стрелка на нуле, редкие фоновые щелчки подтверждают, что поиск работает;
-- метка впервые найдена в доступной зоне — отчётливое подтверждение;
-- слабый/нестабильный сигнал — редкий бип;
-- устойчивый сигнал — более частый бип;
-- заметное увеличение RSSI — голос/более частый бип «Ближе»;
-- очень сильный ближний сигнал — максимально частые щелчки и крайнее положение стрелки.
-
-Пороговые значения и частоты калибруются экспериментально. RSSI не является точным измерителем расстояния, поэтому приложение говорит о направлении приближения, а не о сантиметрах.
-
-## Офлайн-распознавание речи и озвучивание
-
-Распознавание выполняется локально через Vosk с русской моделью `vosk-model-small-ru-0.22`. Каталог модели хранится локально в `models/` и игнорируется Git, а Gradle включает его в APK через `voskModelDir`. Модель загружается и прогревается в фоне при создании `MainViewModel`, а не в момент первого слова. Событие `Слушаю` отправляется только после успешного `AudioRecord.startRecording()`. Для устройств с достаточным объёмом памяти можно подменить модель на большую `vosk-model-ru-*` без изменения интерфейса распознавателя; это повышает точность ценой размера APK, времени загрузки и RAM.
-
-Экран голосового ввода (`VoiceListening`) запускает запись автоматически при входе в состояние. На экране остаются только вопрос, анимированный микрофон и подпись `Слушаю`; отдельные кнопки «Слушать офлайн» и «Начать поиск» не нужны. После успешного распознавания состояние `VoiceConfirmation` показывает фразу крупно между верхней зоной `ИЗМЕНИТЬ` и нижней `ГОТОВО!`. Подтверждение запускает поиск или камеру добавления, изменение возвращает к автоматическому прослушиванию.
-
-`CommandParser` должен:
-
-- убрать приветственные слова и лишние пробелы;
-- привести `ё` к `е`;
-- принимать после вопроса «Что найти?» простое название без командного слова, например `очки` или `пульт от телевизора`;
-- отделить необязательные команды поиска `ищи`, `найди`, `ищу`, `поиск` от названия;
-- распознавать явные команды добавления `добавь`, `добавить` отдельно от обычного поискового запроса;
-- нормализовать русские окончания и сравнивать с названиями нечетко;
-- возвращать confidence и исходную фразу для уточнения.
-
-Фразы `очки` и `найди очки` должны формировать один и тот же доменный запрос поиска. Команда без названия (`найди`) не запускает поиск и приводит к повторному вопросу.
-
-Фиксированные инструкции (например, «Нажмите любую кнопку громкости») хранятся как заранее записанные русские аудиофайлы. Для их подготовки есть скрипт `scripts/generate-elevenlabs-audio.ps1`; ElevenLabs нужен только на машине разработчика. В приложении используется `OfflinePromptPlayer`, который проигрывает локальные MP3, если они присутствуют. Android TTS намеренно не используется: плохая синтезированная речь хуже текстовой подсказки. Интернет не должен быть необходим ни для команды, ни для подсказки.
-
-Сборка принимает локальный путь `voskModelDir` из `local.properties`: Gradle копирует модель в assets, а `VoiceModelInstaller` переносит её в приватное хранилище при первом старте. Системный TTS в приложении отключён; для подсказок используется только `OfflinePromptPlayer` с локальными MP3.
-
-## Камера и экран проверки фото
-
-Камера реализуется через CameraX. В `CAMERA` перехватываются `Volume+` и `Volume−`: любая из кнопок делает один снимок и не меняет системную громкость. Нажатие немедленно подтверждается системным звуком затвора и вибрацией, после чего поверх превью включаются лёгкое затемнение и индикатор обработки. После сохранения открывается `PHOTO_REVIEW`. Заголовок камеры содержит подтверждённое название вещи. Если разрешение камеры отсутствует, приложение показывает проблему и возвращает пользователя в безопасное состояние.
-
-Камера получает контекст операции: создание новой вещи с уже известным EPC, ручное создание без EPC или обновление фотографии существующей вещи. Этот контекст определяет, куда перейдёт автомат после `ГОТОВО!`; UI камеры при этом остаётся одинаковым.
-
-`PHOTO_REVIEW` имеет строго вертикальную композицию:
-
-```text
-┌─────────────────────────┐
-│      ПЕРЕДЕЛАТЬ         │  верхняя зона
-├─────────────────────────┤
-│                         │
-│           фото          │  предпросмотр
-│                         │
-├─────────────────────────┤
-│        ГОТОВО!          │  нижняя зона
-└─────────────────────────┘
+```mermaid
+flowchart TD
+    Mic["AudioRecord / MIC"] --> PCM["16 kHz mono PCM16"]
+    PCM --> VAD["Adaptive energy VAD"]
+    PCM --> WAV["Optional raw diagnostic WAV"]
+    VAD --> Trim["Phrase with pre-roll and post-roll"]
+    Trim --> Gain["Amplitude normalization"]
+    Gain --> Vosk["Vosk by default"]
+    Gain --> Whisper["Whisper by manual service selection"]
+    Vosk --> Match["Russian command parsing / catalogue matching"]
+    Whisper --> Match
 ```
 
-Верхняя и нижняя зоны занимают всю ширину и большую высоту. `ПЕРЕДЕЛАТЬ` возвращает в камеру, `ГОТОВО!` сохраняет фото и запускает сохранение вещи.
+One `AudioCaptureSession` opens the microphone using `MediaRecorder.AudioSource.MIC`. This avoids the vendor voice-recognition DSP route that can return unusable PCM on Huawei devices. Captured buffers are processed in **20 ms** frames independently of the platform buffer size. The ready callback fires after the first processed frame; noise calibration continues inside the detector. Capture ends after the VAD's quiet tail or the **10 s** wall-clock limit.
 
-## Устойчивый ввод (`ResilientTouchZone`)
+`AdaptiveVoiceActivityDetector` measures frame RMS in dBFS, a level relative to full-scale PCM. Its startup baseline collects **300 ms** of frames above −100 dBFS; the noise estimate uses the lower **20th percentile** of a history up to **2 s** long. Before speech starts, quiet frames update this estimate. Speech thresholds are:
 
-Обычная логика `onClick` непригодна как единственное условие для критичных действий. Компонент должен:
-
-1. при первом `ACTION_DOWN` определить зону и зафиксировать её;
-2. не отменять выбор из-за `ACTION_MOVE`, скольжения или выхода пальца за границу;
-3. принимать `ACTION_UP` в любом месте после валидного начала;
-4. игнорировать последующие pointer ID после выбора первой зоны;
-5. при мультитаче не запускать второе действие;
-6. блокировать повторное срабатывание примерно на 300–700 мс;
-7. подавать вибрацию, подсветку и голосовую обратную связь.
-
-«Плотное нажатие» не должно требовать аппаратного датчика силы: на Android 9 разные экраны по-разному сообщают `pressure`. Любой уверенный контакт считается нажатием, а длительность и сила не используются как обязательные условия.
-
-Тот же компонент используется для карточек каталога и других крупных действий. Для accessibility добавляются `contentDescription`, озвучивание выбранного элемента и достаточный контраст.
-
-## Каталог и физические кнопки
-
-Каталог отображает по три элемента на странице. Карточка состоит из фотографии, названия и большой области выбора. Касание не отменяется при скольжении. После выбора карточки автомат переходит в `SEARCH_TARGET` без отдельной кнопки подтверждения.
-
-Все стандартные экранные кнопки используют общий устойчивый обработчик касания:
-первая точка фиксирует цель, небольшое движение не отменяет действие, второй
-палец игнорируется, а повторное срабатывание блокируется примерно на 500 мс.
-
-Обработка громкости зависит от состояния автомата:
-
-| Состояние | `Volume+` / `Volume−` |
+| Decision | Threshold / timing |
 |---|---|
-| `CAMERA` | сделать фотографию |
-| `CATALOG` | предыдущая / следующая страница |
-| остальные | не менять громкость; оставить системное поведение или использовать только явно назначенные действия |
+| Start speech | `max(−42 dBFS, noise floor + 10 dB)` for 180 ms |
+| Continue speech | `max(−48 dBFS, noise floor + 4 dB)` |
+| End capture | 1100 ms below the continuation threshold |
+| Reactivation after a quiet gap | After 250 ms of quiet, require 40 ms of renewed activity |
+| Retained phrase margins | 280 ms before start; 160 ms after last voice frame |
 
-При каталоге длительное удержание кнопки может повторять прокрутку после задержки. На первой и последней странице переход за границу не выполняется; приложение сообщает это голосом или коротким звуком.
+Separate start and continuation thresholds preserve quieter speech after onset. Start confirmation rejects brief clicks; the retained pre-roll preserves the beginning of the phrase. The detector's result is bounded by the available capture. If speech is absent, recognition is skipped while the raw recording can still be kept for analysis.
 
-## Аудио, вибрация и экран
+After trimming, quiet audio is amplified toward a peak of **16000**, with gain limited to **16×**; audio already at or above that peak is unchanged. Normalization occurs after detection, so it does not alter the detector's noise estimate.
 
-При запуске сценария приложение переводит поток подсказок на максимальную громкость, не полагаясь на текущий пользовательский уровень. Предпочтительно использовать `AudioManager` с понятным предупреждением при первом запуске. Бипер IH25 также настраивается на максимальный допустимый уровень.
+**Vosk is the default recognizer** and is prepared at startup. A configured model is copied from generated assets to private app storage. Whisper.cpp `base q5_1` is available through JNI only after manual selection in the service screen; there is no automatic switch between recognizers. Both consume the same capture path. Native Whisper requires the locally supplied `third_party/whisper.cpp` source at tag `v1.9.2`, NDK `26.3.11579264`, CMake `3.22.1` and `arm64-v8a`. Without a usable NDK, Gradle leaves the native target disabled and Vosk remains available.
 
-Каждое важное действие имеет как минимум два канала обратной связи: крупный текст/подсветка плюс голос или звук. Вибрация дополняет, но не заменяет звук.
+`VoiceDiagnosticStore` optionally saves **raw, untrimmed and unnormalized** mono PCM16 WAV files in private `voice-diagnostics/`. The service screen can replay a file through the selected recognizer. `scripts/vad_reference.py` provides a Python reference detector, while `scripts/test_vad_reference.py` checks silence, short/long phrases, isolated clicks and configurable quiet tails. `scripts/analyze_voice_wav.py` exports windowed levels and plots a configured fixed threshold; its plot does not show the adaptive detector's thresholds or segmentation.
 
-## Хранение данных
+Russian commands allow a bare item name or a search/add prefix. Catalogue matching combines normalized text, lightweight word stems, edit distance and consonant skeletons. Fuzzy matches require confirmation; similarly scored fuzzy candidates are rejected so database order does not choose the item.
 
-Минимальные сущности:
+## Camera, touch and feedback
 
-- `Item`: локальный ID, название, нормализованное название, путь к фото, дата создания, состояние;
-- `RfidTag`: EPC, ссылка на `Item`, дата первого/последнего чтения;
-- `Settings`: MAC считывателя, уровни мощности, параметры чтения, флаги kiosk и аудио;
-- при необходимости `VoiceLabel`: путь к записи произнесённого названия.
+CameraX takes a picture from either volume key. A capture request is tied to the active camera context: busy requests are rejected, navigation cancels the request and late results cannot open photo review in a different workflow. Capture confirmation follows an accepted request. The photo review offers redo or save.
 
-EPC должен быть уникальным. Удаление вещи должно сначала удалить/пометить связь с EPC, чтобы метку можно было зарегистрировать снова. Фотографии хранятся в приватном файловом каталоге приложения, а в Room — только путь и метаданные.
+Large buttons use `resilientButtonInput`: the first pointer owns the gesture, movement does not cancel the action, extra pointers do not produce another action, and repeated activation is gated for **500 ms**. Catalogue cards use a separate handler that cancels selection after scrolling or multitouch, allowing the continuous `LazyColumn` catalogue to scroll normally. Volume+ moves up and Volume− moves down.
 
-## Фоновая работа и kiosk-режим
+A **600 ms** touch gate follows logical screen changes. Its key excludes live RSSI and voice progress, so ordinary updates do not repeatedly block input. `AnimatedContent` transitions retain that logical screen identity. Theme colors, typography and shared dimensions live in `ui/theme`; reusable controls live in `ui/components`, and screen bodies in `ui/screens`.
 
-Bluetooth-соединение и обработчик курка живут в foreground service, чтобы переживать погашение экрана. Activity при событии курка будит экран через `PowerManager` и открывается поверх lock screen только в пределах разрешённых Android 9 механизмов.
+The signal meter and generated click sound supply live search feedback. `OfflinePromptPlayer` plays optional prerecorded files from `assets/voice`; missing files leave the on-screen prompt visible. No network speech service is used at runtime. Announcements are cleared between screen workflows, and the status banner exposes a polite accessibility live region. Inactivity returns the app to `Idle` after **one hour**, while an active photo save is allowed to finish.
 
-Надёжное открытие приложения из полностью погашенного/заблокированного состояния следует проверить на устройстве. В production-поставке это решается выделенным устройством, `device owner` и kiosk-режимом. До включения kiosk приложение не должно рассчитывать на возможность перехватить кнопку питания или гарантированно обойти произвольную блокировку Android.
+## Storage and optional backup
 
-## Разработка без опубликованного SDK
+Room schema version **3** contains `items` and `sync_outbox`. Items store their EPC directly, a stable `syncId`, name, normalized name, photo path and timestamps. Photos live in private files. Schema migrations preserve existing items and initialize pending backup events; the version 2→3 migration removes the specific legacy demo entries.
 
-Каталог SDK и AAR не коммитятся в Git. Локальная сборка ожидает:
+`ItemRepository` commits each item change and its outbox event in one Room transaction, then schedules synchronization. Pending changes to the same item are compacted. Local deletion removes the item and queues a `DELETE` event. A unique WorkManager worker uploads photographs by SHA-256 before sending idempotent events; restore preserves objects with pending local events. Android Keystore supplies an ECDSA P-256 key for signed requests.
 
-```text
-Honeywell_RFID_SDK_v0.5.0/libs/honeywell_rfid_sdk.aar
-```
-
-Для unit-тестов доменной логики используется `FakeRfidGateway`; тесты автомата, fuzzy matching и `ResilientTouchZone` не должны требовать AAR или физического IH25. Интеграционные тесты с реальным SDK выполняются отдельно на Huawei nova 3.
-
-## Нерешённые параметры для калибровки
-
-- точная минимальная/максимальная мощность и диапазон ступеней IH25;
-- длительность первичного чтения и количество подтверждений EPC;
-- формула сглаживания, пороги сильного RSSI и задержки переключения мощности;
-- задержка установки и размер офлайн-русской Vosk-модели;
-- наличие сгенерированных русских MP3-подсказок и громкость `MediaPlayer` на Huawei nova 3;
-- поведение IH25 при погашенном экране и в разных режимах блокировки;
-- фактические размеры зон и время блокировки повторного касания.
-
-Эти параметры должны храниться в `Settings`/конфигурации и изменяться в сервисном экране, а не быть зашиты в UI.
-
-## Голосовой pipeline Whisper/Vosk
-
-`AudioCaptureSession` создаёт один поток `AudioRecord` с параметрами 16 kHz, mono, PCM16. Первые буферы используются для адаптивной оценки шума, затем callback готовности сообщает о реально запущенном микрофоне; вся короткая запись сохраняется до окончания по 750 мс тишины или через 6 секунд. Тихий сигнал Huawei нормализуется перед передачей в выбранный движок.
-
-`OfflineVoiceEngine` по умолчанию передаёт полученный PCM в Whisper `base q5_1`. Vosk запускается только после явного выбора режима в сервисном экране — автоматического fallback нет, чтобы сравнение качества не смешивало результаты двух движков. Ни один из распознавателей не открывает второй микрофонный сеанс. Whisper подключён через pinned whisper.cpp `v1.9.2`, CMake и JNI (`app/src/main/cpp`); в APK production/mock включается `ggml-base-q5_1.bin`.
-
-На машине без полноценного NDK native target отключается на этапе Gradle-конфигурации, поэтому mock/hardware UI остаются собираемыми; для такой сборки Whisper нужно явно заменить на Vosk в сервисном экране. При наличии NDK `26.3.11579264` автоматически собирается `libwhisper-jni.so` для `arm64-v8a`.
-
-## Состояния поиска и жест курка
-
-`RfidSearch` работает до отпускания курка и начинает с `SearchPowerPolicy.maxPower`. Сильный RSSI постепенно уменьшает мощность, отсутствие метки расширяет зону. Отпускание переводит состояние в `SearchPaused(item, power, lastDetection)`. Кнопка завершения отменяет inventory и сразу возвращает `Idle`; отдельного экрана `Found` нет.
-
-В `SearchPaused` при нажатии запускается таймер на 1000 мс. Если курок отпущен раньше, выполняется первоначальная контекстная проверка. Если таймер истёк, inventory возобновляется немедленно и продолжается, пока тот же физический курок остаётся нажатым. Экранной кнопки-дублёра курка нет.
-
-Foreground service не показывает wake/full-screen notification, если `MainActivity` уже находится в состоянии `RESUMED`. Механизм «Открываю приложение» используется только когда приложение скрыто или экран заблокирован.
-
-## Каталог и feedback
-
-`Catalog(selectedIndex)` отображается через `LazyColumn`; `moveCatalogIndex` инвертирует направление физических кнопок (`Volume+` вверх, `Volume−` вниз). Справа рисуется scrollbar, снизу показывается позиция «N из M» и текстовая подсказка управления.
-
-Визуальный announcement привязан к ключу состояния экрана и очищается при переходе между сценариями. Голосовые события остаются краткоживущими и воспроизводятся через offline prompt player, поэтому сообщение поиска не может протечь в каталог или сервисный экран.
-
-`InactivityPolicy` возвращает приложение в `Idle` после часа без действий. Активное сохранение фотографии не прерывается; voice/inventory jobs при таймауте отменяются.
+The optional FastAPI/SQLite server supports registration, upload and catalogue restoration on a replacement phone. Detailed event ordering, authentication, conflict handling and deployment are documented in [BACKUP_SYNC.md](BACKUP_SYNC.md) and the [server guide](server/README.md).
