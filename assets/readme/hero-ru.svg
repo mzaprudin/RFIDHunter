@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">RFIDHunter — поиск вещей по RFID-меткам</title>
+  <desc id="desc">Условная иллюстрация внешнего ручного RFID-считывателя и одной выбранной метки среди соседних. Android-приложение помогает выбрать вещь и следовать её сигналу; это не скриншот интерфейса и не измерение расстояния.</desc>
+  <rect width="1200" height="400" rx="24" fill="#192733"/>
+
+  <g id="project-title" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="52" y="157" font-size="106" font-weight="700" letter-spacing="-4" fill="#f4f6f8">RFID<tspan fill="#8bbdf4">Hunter</tspan></text>
+    <text x="56" y="258" font-size="44" fill="#d7e1e8">Поиск вещей</text>
+    <text x="56" y="314" font-size="44" fill="#d7e1e8">по RFID-меткам</text>
+  </g>
+
+  <g id="reader-and-selected-tag" transform="translate(0 -24)" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Before the overall lift: centers at x=1092, y=110/217/324; equal gaps of 29 units. -->
+    <g id="nearby-tags" transform="translate(-7 0)" fill="none" stroke="#9baebd" stroke-width="2.5">
+      <rect x="1054" y="78" width="90" height="64" rx="10"/>
+      <rect x="1054" y="292" width="90" height="64" rx="10"/>
+      <path d="M1093 104h12v12h-12zM1093 110h-10V96h-16v28h16v-7m22-7h10V96h16v28h-16v-7M1093 318h12v12h-12zM1093 324h-10v-14h-16v28h16v-7m22-7h10v-14h16v28h-16v-7"/>
+    </g>
+
+    <g id="selected-tag" transform="translate(0 -9)" stroke="#8bbdf4">
+      <rect x="1038" y="180" width="108" height="92" rx="12" fill="#294257" stroke-width="4"/>
+      <rect x="1084" y="218" width="16" height="16" rx="2" fill="#8bbdf4" stroke="none"/>
+      <path d="M1084 226h-9v-17h-24v34h24v-9m25-8h9v-17h24v34h-24v-9" fill="none" stroke-width="3"/>
+      <circle cx="1129" cy="196" r="10" fill="#8bbdf4" stroke="#294257" stroke-width="2.5"/>
+      <path d="m1124 196 3 3 7-8" fill="none" stroke="#192733" stroke-width="3"/>
+    </g>
+
+    <g id="rfid-response" transform="translate(0 -10)" fill="none" stroke="#7bd3c5" stroke-width="4">
+      <path d="M955 205q18 22 0 44m16-59q31 37 0 74m17-90q44 53 0 106"/>
+    </g>
+
+    <g id="external-handheld-reader" transform="translate(0 -10)" stroke="#b3c4cf" stroke-width="4">
+      <path d="M811 251h40l17 73q2 12-10 12h-25q-9 0-11-10z" fill="#294257"/>
+      <path d="M858 260l7 25" fill="none" stroke="#8bbdf4" stroke-width="7"/>
+      <rect x="786" y="192" width="156" height="70" rx="18" fill="#253b4c"/>
+      <path d="M922 202v50" fill="none" stroke="#8bbdf4" stroke-width="6"/>
+      <path d="M803 207h30" fill="none" stroke="#9baebd" stroke-width="3"/>
+    </g>
+  </g>
+</svg>
